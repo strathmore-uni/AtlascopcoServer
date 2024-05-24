@@ -2,12 +2,12 @@ const express = require('express');
 const mysql = require('mysql2');
 const app = express();
 const cors = require('cors');
-require('dotenv').config(); // Load environment variables
+require('dotenv').config(); 
 
-// Middleware to parse JSON
+
 app.use(express.json());
 app.use(cors({
-  origin: 'http://localhost:3002', // Ensure this matches your frontend's URL
+  origin: 'http://localhost:3002', 
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
@@ -47,7 +47,7 @@ connection.connect(err => {
   }
 });
 
-// Example route to fetch data
+
 app.get('/api/data', (req, res) => {
   connection.query('SELECT * FROM products', (err, results) => {
     if (err) {
@@ -60,9 +60,7 @@ app.get('/api/data', (req, res) => {
 
 app.get('api/products', (req, res) => {
   const { minPrice, maxPrice } = req.query;
-  // Query your database or data source with the provided price range
-  // Return the results as JSON
- 
+
   res.json({ minPrice, maxPrice });
 });;
 
@@ -93,7 +91,6 @@ app.get('/api/search', (req, res) => {
   WHERE Description LIKE ? OR partnumber LIKE ?
 `;
 
-  // Use '%' to perform a partial match
   const searchValue = `%${searchTerm}%`;
 
   connection.query(query, [searchValue, searchValue],
@@ -112,7 +109,6 @@ app.get('/api/search', (req, res) => {
       });
 });
 
-// POST route to place an order
 app.post('/api/order', async (req, res) => {
   const { formData, cartItems, orderNumber } = req.body;
 
@@ -121,10 +117,10 @@ app.post('/api/order', async (req, res) => {
   }
 
   try {
-    // Start a transaction
+ 
     await connection.promise().query('START TRANSACTION');
 
-    // Insert order data
+   
     const [orderResult] = await connection.promise().query(
       `INSERT INTO placing_orders (company_name, title, first_name, second_name, address1, address2, city, zip, phone, email, ordernumber) 
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -145,7 +141,6 @@ app.post('/api/order', async (req, res) => {
 
     const orderId = orderResult.insertId;
 
-    // Insert each cart item
     for (const item of cartItems) {
       await connection.promise().query(
         `INSERT INTO order_items (order_id, description, quantity, price) 
@@ -154,30 +149,28 @@ app.post('/api/order', async (req, res) => {
       );
     }
 
-    // Commit the transaction
     await connection.promise().query('COMMIT');
     res.status(201).json({ message: 'Order placed successfully', orderId });
 
   } catch (error) {
-    // Rollback the transaction in case of error
+
     await connection.promise().query('ROLLBACK');
     console.error('Error placing order:', error);
     res.status(500).send(error);
   }
 });
 
-// Define the port
+
 
 
 const port = process.env.PORT || 3001;
 
-// Start the server
+
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
 });
 
 
-// Test route to verify connection
 app.get('/api/test-connection', (req, res) => {
   connection.query('SELECT 1 + 1 AS solution', (err, results) => {
     if (err) {
