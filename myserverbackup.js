@@ -1,29 +1,3 @@
-const express = require('express');
-const mysql = require('mysql2');
-const app = express();
-const cors = require('cors');
-require('dotenv').config(); 
-
-
-app.use(express.json());
-app.use(cors({
-  origin: 'http://localhost:3000', 
-  methods: ['GET', 'POST', 'PUT', 'DELETE'],
-  allowedHeaders: ['Content-Type', 'Authorization']
-}));
-
-const connection = mysql.createConnection({
-  host: 'localhost',
-  user: 'root',
-  password: '10028mike.',
-  database: 'atlascopco',
-port: 3306,
-
-
-});
-
-module.exports = connection;
-
 // MySQL connection
 
 {/**
@@ -34,7 +8,7 @@ const connection = mysql.createConnection({
   database: 'atlascopco'
 
   
-    host:'34.122.70.186',
+    host:'ultra-mediator-423907-a4:us-central1:atlascopco',
   user:'atlascopco_admin',
   password:'10028mike.',
   database:'AtlasCopco',
@@ -50,7 +24,7 @@ database: process.env.DATABASE,
 port: process.env.DB_PORT,
 host:process.env.DB_HOST
 });
- */}
+ 
 connection.connect(err => {
   if (err) {
     console.error('Error connecting to MySQL:', err);
@@ -58,6 +32,25 @@ connection.connect(err => {
     console.log('Connected to MySQL');
   }
 });
+
+
+*/}
+
+
+
+
+app.get('/api/data', async (req, res) => {
+  try {
+      const connection = await pool.getConnection();
+      const [rows] = await connection.query('SELECT * FROM products');
+      connection.release();
+      res.json(rows);
+  } catch (error) {
+      console.error(error);
+      res.status(500).send('Error fetching data');
+  }
+});
+
 
 app.get('/', (req, res) => {
   res.send('Hello World!');
@@ -67,75 +60,9 @@ app.get('/', (req, res) => {
 
 
 
-//////////////////////////API REQUESTS//////////////////////////////
-
-
-//getting filterelements category from db
-app.get('/api/filterelement', (req, res) => {
-  connection.query('SELECT * FROM fulldata WHERE subCategory LIKE ?', ['%filterelement%'], (err, results) => {
-    if (err) {
-      res.status(500).send(err);
-    } else {
-      res.json(results);
-    }
-  });
-});
-
-//getting oilfilterelements category from db
-app.get('/api/oilfilterelement', (req, res) => {
-  connection.query('SELECT * FROM fulldata WHERE subCategory LIKE ?', ['%oilfilterelement%'], (err, results) => {
-    if (err) {
-      res.status(500).send(err);
-    } else {
-      res.json(results);
-    }
-  });
-});
-
-//getting servkit category from db
-app.get('/api/servkitfulldata', (req, res) => {
-  connection.query('SELECT * FROM fulldata WHERE subCategory LIKE ?', ['%servkit%'], (err, results) => {
-    if (err) {
-      res.status(500).send(err);
-    } else {
-      res.json(results);
-    }
-  });
-});
-
-//getting autodrainvalve category from db
-app.get('/api/autodrainvalve', (req, res) => {
-  connection.query('SELECT * FROM fulldata WHERE subCategory LIKE ?', ['%autodrainvalve%'], (err, results) => {
-    if (err) {
-      res.status(500).send(err);
-    } else {
-      res.json(results);
-    }
-  });
-});
-
-
-
-app.get('/api/fulldata', (req, res) => {
-  connection.query('SELECT * FROM fulldata', (err, results) => {
-    if (err) {
-      res.status(500).send(err);
-    } else {
-      res.json(results);
-    }
-  });
-});
-
-
-
-
-
-
-
-
-
+//API REQUESTS
 app.get('/api/data', (req, res) => {
-  connection.query('SELECT * FROM fulldata', (err, results) => {
+  connection.query('SELECT * FROM products', (err, results) => {
     if (err) {
       res.status(500).send(err);
     } else {
@@ -143,7 +70,6 @@ app.get('/api/data', (req, res) => {
     }
   });
 });
-
 
 app.get('api/products', (req, res) => {
   const { minPrice, maxPrice } = req.query;
@@ -152,8 +78,15 @@ app.get('api/products', (req, res) => {
 });;
 
 
-
-
+app.get('/api/servkit', (req, res) => {
+  connection.query('SELECT * FROM servkit', (err, results) => {
+    if (err) {
+      res.status(500).send(err);
+    } else {
+      res.json(results);
+    }
+  });
+});
 
 
 app.get('/api/search', (req, res) => {
@@ -168,7 +101,7 @@ app.get('/api/search', (req, res) => {
   }
 
   const query = `
-  SELECT * FROM fulldata
+  SELECT * FROM products
   WHERE Description LIKE ? OR partnumber LIKE ?
 `;
 
@@ -265,24 +198,3 @@ app.get('/product/:id', (req, res) => {
 
 
 
-
-
-
-
-
-const port = process.env.PORT || 3001;
-
-
-app.listen(port, () => {
-  console.log(`Server running on port ${port}`);
-});
-
-
-app.get('/api/test-connection', (req, res) => {
-  connection.query('SELECT 1 + 1 AS solution', (err, results) => {
-    if (err) {
-      return res.status(500).send(err);
-    }
-    res.json({ message: 'Database connected', solution: results[0].solution });
-  });
-});
