@@ -8,12 +8,3 @@ app.get('/api/fulldata', (req, res) => {
     });
   });
 
-  app.get('/api/servkit', (req, res) => {
-    connection.query('SELECT * FROM servkit', (err, results) => {
-      if (err) {
-        res.status(500).send(err);
-      } else {
-        res.json(results);
-      }
-    });
-  });

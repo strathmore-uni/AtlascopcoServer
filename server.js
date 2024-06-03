@@ -5,6 +5,18 @@ const cors = require('cors');
 require('dotenv').config(); 
 
 
+{/**
+async function fetchtext(){
+  let url='https:/ipinfo.io/json?token=19349ef51244e4'
+  let response = await fetch(url)
+  let data = await response.json()
+  
+  console.log(data.country);
+}
+fetchtext();
+ */}
+
+
 app.use(express.json());
 app.use(cors({
   origin: 'http://localhost:3000', 
@@ -67,9 +79,28 @@ app.get('/', (req, res) => {
 
 
 
+
 //////////////////////////API REQUESTS//////////////////////////////
 
+app.get('/api/products', (req, res) => {
+  const countryCode = req.query.country;
 
+  const query = `
+    SELECT partnumber, Description,pr.price
+    FROM fulldata p
+    JOIN atlascopcoproduct_prices pr ON p.id = pr.product_id
+    WHERE pr.country_code = ?
+  `;
+
+  connection.query(query, [countryCode], (err, results) => {
+    if (err) {
+      console.error('Error executing query:', err);
+      res.status(500).send('Internal Server Error');
+    } else {
+      res.json(results);
+    }
+  });
+});
 //getting filterelements category from db
 app.get('/api/filterelement', (req, res) => {
   connection.query('SELECT * FROM fulldata WHERE subCategory LIKE ?', ['%filterelement%'], (err, results) => {
@@ -113,6 +144,88 @@ app.get('/api/autodrainvalve', (req, res) => {
     }
   });
 });
+
+//getting contractor category from db
+app.get('/api/contractor', (req, res) => {
+  connection.query('SELECT * FROM fulldata WHERE subCategory LIKE ?', ['%contractor%'], (err, results) => {
+    if (err) {
+      res.status(500).send(err);
+    } else {
+      res.json(results);
+    }
+  });
+});
+
+//getting overhaulkit category from db
+app.get('/api/overhaulkit', (req, res) => {
+  connection.query('SELECT * FROM fulldata WHERE subCategory LIKE ?', ['%overhaulkit%'], (err, results) => {
+    if (err) {
+      res.status(500).send(err);
+    } else {
+      res.json(results);
+    }
+  });
+});
+//getting silencerkit category from db
+app.get('/api/silencerkit', (req, res) => {
+  connection.query('SELECT * FROM fulldata WHERE mainCategory LIKE ?', ['%silencerkit%'], (err, results) => {
+    if (err) {
+      res.status(500).send(err);
+    } else {
+      res.json(results);
+    }
+  });
+});
+//getting maintenancekit category from db
+app.get('/api/maintenancekit', (req, res) => {
+  connection.query('SELECT * FROM fulldata WHERE mainCategory LIKE ?', ['%maintenancekit%'], (err, results) => {
+    if (err) {
+      res.status(500).send(err);
+    } else {
+      res.json(results);
+    }
+  });
+});
+
+//getting bearingkits category from db
+app.get('/api/bearingkits', (req, res) => {
+  connection.query('SELECT * FROM fulldata WHERE subCategory LIKE ?', ['%bearingkits%'], (err, results) => {
+    if (err) {
+      res.status(500).send(err);
+    } else {
+      res.json(results);
+    }
+  });
+});
+
+//getting prevmain category from db
+app.get('/api/prevmain', (req, res) => {
+  connection.query('SELECT * FROM fulldata WHERE subCategory LIKE ?', ['%prevmain%'], (err, results) => {
+    if (err) {
+      res.status(500).send(err);
+    } else {
+      res.json(results);
+    }
+  });
+});
+
+//getting hrkit category from db
+app.get('/api/hrkit', (req, res) => {
+  connection.query('SELECT * FROM fulldata WHERE subCategory LIKE ?', ['%hrkit%'], (err, results) => {
+    if (err) {
+      res.status(500).send(err);
+    } else {
+      res.json(results);
+    }
+  });
+});
+
+
+
+
+
+
+
 
 
 
