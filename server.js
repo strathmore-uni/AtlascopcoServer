@@ -25,14 +25,16 @@ app.use(cors({
 }));
 
 const connection = mysql.createConnection({
-  host:'34.122.70.186',
-  user:'atlascopco_admin',
-  password:'10028mike.',
-  database:'AtlasCopco',
+  host:process.env.INSTANCE_HOST,
+  user: process.env.DB_USERNAME,
+password: process.env.DB_PASSWORD,
+database: process.env.DATABASE,
+port: process.env.DB_PORT,
+
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0,
-  port: 3306,
+
 
 
 });
@@ -126,13 +128,13 @@ app.get('/api/products/:category', (req, res) => {
 //////////////////////////API REQUESTS//////////////////////////////
 
 
-{/** 
+
 app.get('/api/products', (req, res) => {
   const countryCode = req.query.country;
 
   const query = `
-    SELECT partnumber, Description,pr.price
-    FROM fulldata p
+    SELECT name, description,pr.price
+    FROM atlascopcoproducts p
     JOIN atlascopcoproduct_prices pr ON p.id = pr.product_id
     WHERE pr.country_code = ?
   `;
@@ -265,7 +267,6 @@ app.get('/api/hrkit', (req, res) => {
   });
 });
 
-*/}
 
 app.get('/api/search', (req, res) => {
   const searchTerm = req.query.term;
