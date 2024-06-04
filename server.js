@@ -25,11 +25,14 @@ app.use(cors({
 }));
 
 const connection = mysql.createConnection({
-  host: 'localhost',
-  user: 'root',
-  password: '10028mike.',
-  database: 'atlascopco',
-port: 3306,
+  host:'34.122.70.186',
+  user:'atlascopco_admin',
+  password:'10028mike.',
+  database:'AtlasCopco',
+  waitForConnections: true,
+  connectionLimit: 10,
+  queueLimit: 0,
+  port: 3306,
 
 
 });
@@ -54,6 +57,19 @@ const connection = mysql.createConnection({
   connectionLimit: 10,
   queueLimit: 0,
 
+  const dbConfig = {
+  host: '34.122.70.186',
+  user: 'atlascopco_admin',
+  password: '10028mike.',
+  database: 'AtlasCopco',
+  ssl: {
+    ca: fs.readFileSync('path/to/ssl/cert.pem'),
+    key: fs.readFileSync('path/to/ssl/key.pem'),
+    cert: fs.readFileSync('path/to/ssl/cert.pem')
+  }
+};
+
+const connection = await mysql.createConnection(dbConfig);
 
 
   username: process.env.DB_USERNAME,
@@ -76,12 +92,41 @@ app.get('/', (req, res) => {
 });
 
 
+app.get('/api/fulldata', (req, res) => {
+  connection.query('SELECT * FROM fulldata', (err, results) => {
+    if (err) {
+      res.status(500).send(err);
+    } else {
+      res.json(results);
+    }
+  });
+});
+
+app.get('/api/products/:category', (req, res) => {
+  const category = req.params.category;
 
 
+  const query = `
+    SELECT * FROM fulldata WHERE subCategory LIKE ? OR mainCategory LIKE ?
+  `;
+
+  connection.query(query, [`%${category}%`, `%${category}%`], (err, results) => {
+    if (err) {
+     
+      res.status(500).send(err);
+    } else {
+   
+      res.json(results);
+    }
+  });
+
+});
 
 
 //////////////////////////API REQUESTS//////////////////////////////
 
+
+{/** 
 app.get('/api/products', (req, res) => {
   const countryCode = req.query.country;
 
@@ -220,54 +265,7 @@ app.get('/api/hrkit', (req, res) => {
   });
 });
 
-
-
-
-
-
-
-
-
-
-app.get('/api/fulldata', (req, res) => {
-  connection.query('SELECT * FROM fulldata', (err, results) => {
-    if (err) {
-      res.status(500).send(err);
-    } else {
-      res.json(results);
-    }
-  });
-});
-
-
-
-
-
-
-
-
-
-app.get('/api/data', (req, res) => {
-  connection.query('SELECT * FROM fulldata', (err, results) => {
-    if (err) {
-      res.status(500).send(err);
-    } else {
-      res.json(results);
-    }
-  });
-});
-
-
-app.get('api/products', (req, res) => {
-  const { minPrice, maxPrice } = req.query;
-
-  res.json({ minPrice, maxPrice });
-});;
-
-
-
-
-
+*/}
 
 app.get('/api/search', (req, res) => {
   const searchTerm = req.query.term;
