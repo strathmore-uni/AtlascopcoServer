@@ -1,1 +1,10 @@
 runtime: nodejs20
+env: standard
+instance_class: F1
+env_variables:
+  INSTANCE_HOST: "34.122.70.186"
+  DB_USERNAME: "atlascopco_admin"
+  DB_PASSWORD: "your-db-password"
+  DATABASE: "AtlasCopco"
+  DB_PORT: "3306"
+  

@@ -1,10 +1,18 @@
 const express = require('express');
 const mysql = require('mysql2');
 const app = express();
+const path = require('path');
 const cors = require('cors');
 require('dotenv').config(); 
 
 
+// Serve the static files from the React app
+app.use(express.static(path.join(__dirname, 'build')));
+
+// Handles any requests that don't match the ones above
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, 'build', 'index.html'));
+});
 {/**
 async function fetchtext(){
   let url='https:/ipinfo.io/json?token=19349ef51244e4'
