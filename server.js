@@ -1,100 +1,25 @@
 const express = require('express');
-const mysql = require('mysql2');
+const mysql = require('mysql2/promise');
 const app = express();
-const path = require('path');
 const cors = require('cors');
-require('dotenv').config(); 
-
-
-// Serve the static files from the React app
-app.use(express.static(path.join(__dirname, 'build')));
-
-// Handles any requests that don't match the ones above
-app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, 'build', 'index.html'));
-});
-{/**
-async function fetchtext(){
-  let url='https:/ipinfo.io/json?token=19349ef51244e4'
-  let response = await fetch(url)
-  let data = await response.json()
-  
-  console.log(data.country);
-}
-fetchtext();
- */}
-
+require('dotenv').config();
 
 app.use(express.json());
 app.use(cors({
-  origin: 'http://localhost:3000', 
+  origin: 'http://localhost:3000',
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
-const connection = mysql.createConnection({
-  host:process.env.INSTANCE_HOST,
+const pool = mysql.createPool({
+  host: process.env.INSTANCE_HOST,
   user: process.env.DB_USERNAME,
-password: process.env.DB_PASSWORD,
-database: process.env.DATABASE,
-port: process.env.DB_PORT,
-
+  password: process.env.DB_PASSWORD,
+  database: process.env.DATABASE,
+  port: process.env.DB_PORT,
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0,
-
-
-
-});
-
-module.exports = connection;
-
-// MySQL connection
-
-{/**
-const connection = mysql.createConnection({
-  host: 'localhost',
-  user: 'root',
-  password: '10028mike.',
-  database: 'atlascopco'
-
-  
-    host:'34.122.70.186',
-  user:'atlascopco_admin',
-  password:'10028mike.',
-  database:'AtlasCopco',
-  waitForConnections: true,
-  connectionLimit: 10,
-  queueLimit: 0,
-
-  const dbConfig = {
-  host: '34.122.70.186',
-  user: 'atlascopco_admin',
-  password: '10028mike.',
-  database: 'AtlasCopco',
-  ssl: {
-    ca: fs.readFileSync('path/to/ssl/cert.pem'),
-    key: fs.readFileSync('path/to/ssl/key.pem'),
-    cert: fs.readFileSync('path/to/ssl/cert.pem')
-  }
-};
-
-const connection = await mysql.createConnection(dbConfig);
-
-
-  username: process.env.DB_USERNAME,
-password: process.env.DB_PASSWORD,
-database: process.env.DATABASE,
-port: process.env.DB_PORT,
-host:process.env.DB_HOST
-});
- */}
-connection.connect(err => {
-  if (err) {
-    console.error('Error connecting to MySQL:', err);
-  } else {
-    console.log('Connected to MySQL');
-  }
 });
 
 app.get('/', (req, res) => {
@@ -102,227 +27,118 @@ app.get('/', (req, res) => {
 });
 
 
-app.get('/api/fulldata', (req, res) => {
-  connection.query('SELECT * FROM fulldata', (err, results) => {
-    if (err) {
-      res.status(500).send(err);
-    } else {
-      res.json(results);
-    }
-  });
+app.get('/api/fulldata', async (req, res) => {
+  try {
+    const [results] = await pool.query('SELECT * FROM fulldata');
+    res.json(results);
+  } catch (err) {
+    console.error('Error executing query:', err);
+    res.status(500).send(err);
+  }
 });
 
-app.get('/api/products/:category', (req, res) => {
-  const category = req.params.category;
 
+
+
+
+app.get('/api/stockproducts', async (req, res) => {
 
   const query = `
-    SELECT * FROM fulldata WHERE subCategory LIKE ? OR mainCategory LIKE ?
+   SELECT p.id, p.partnumber, p.Description, p.Price, s.quantity
+    FROM fulldata p
+    JOIN stock s ON p.id = s.product_id
   `;
-
-  connection.query(query, [`%${category}%`, `%${category}%`], (err, results) => {
-    if (err) {
-     
-      res.status(500).send(err);
-    } else {
-   
-      res.json(results);
-    }
-  });
-
+  try {
+    const [results] = await pool.query(query);
+    res.json(results);
+  } catch (err) {
+    console.error('Error executing query:', err);
+    res.status(500).send('Internal Server Error');
+  }
 });
 
-
-//////////////////////////API REQUESTS//////////////////////////////
-
-
-
-app.get('/api/products', (req, res) => {
+app.get('/api/products/:category?', async (req, res) => {
+  const category = req.params.category;
   const countryCode = req.query.country;
 
-  const query = `
-    SELECT name, description,pr.price
-    FROM atlascopcoproducts p
-    JOIN atlascopcoproduct_prices pr ON p.id = pr.product_id
-    WHERE pr.country_code = ?
-  `;
+  let query;
+  let queryParams;
 
-  connection.query(query, [countryCode], (err, results) => {
-    if (err) {
-      console.error('Error executing query:', err);
-      res.status(500).send('Internal Server Error');
-    } else {
-      res.json(results);
-    }
-  });
-});
-//getting filterelements category from db
-app.get('/api/filterelement', (req, res) => {
-  connection.query('SELECT * FROM fulldata WHERE subCategory LIKE ?', ['%filterelement%'], (err, results) => {
-    if (err) {
-      res.status(500).send(err);
-    } else {
-      res.json(results);
-    }
-  });
-});
-
-//getting oilfilterelements category from db
-app.get('/api/oilfilterelement', (req, res) => {
-  connection.query('SELECT * FROM fulldata WHERE subCategory LIKE ?', ['%oilfilterelement%'], (err, results) => {
-    if (err) {
-      res.status(500).send(err);
-    } else {
-      res.json(results);
-    }
-  });
-});
-
-//getting servkit category from db
-app.get('/api/servkitfulldata', (req, res) => {
-  connection.query('SELECT * FROM fulldata WHERE subCategory LIKE ?', ['%servkit%'], (err, results) => {
-    if (err) {
-      res.status(500).send(err);
-    } else {
-      res.json(results);
-    }
-  });
-});
-
-//getting autodrainvalve category from db
-app.get('/api/autodrainvalve', (req, res) => {
-  connection.query('SELECT * FROM fulldata WHERE subCategory LIKE ?', ['%autodrainvalve%'], (err, results) => {
-    if (err) {
-      res.status(500).send(err);
-    } else {
-      res.json(results);
-    }
-  });
-});
-
-//getting contractor category from db
-app.get('/api/contractor', (req, res) => {
-  connection.query('SELECT * FROM fulldata WHERE subCategory LIKE ?', ['%contractor%'], (err, results) => {
-    if (err) {
-      res.status(500).send(err);
-    } else {
-      res.json(results);
-    }
-  });
-});
-
-//getting overhaulkit category from db
-app.get('/api/overhaulkit', (req, res) => {
-  connection.query('SELECT * FROM fulldata WHERE subCategory LIKE ?', ['%overhaulkit%'], (err, results) => {
-    if (err) {
-      res.status(500).send(err);
-    } else {
-      res.json(results);
-    }
-  });
-});
-//getting silencerkit category from db
-app.get('/api/silencerkit', (req, res) => {
-  connection.query('SELECT * FROM fulldata WHERE mainCategory LIKE ?', ['%silencerkit%'], (err, results) => {
-    if (err) {
-      res.status(500).send(err);
-    } else {
-      res.json(results);
-    }
-  });
-});
-//getting maintenancekit category from db
-app.get('/api/maintenancekit', (req, res) => {
-  connection.query('SELECT * FROM fulldata WHERE mainCategory LIKE ?', ['%maintenancekit%'], (err, results) => {
-    if (err) {
-      res.status(500).send(err);
-    } else {
-      res.json(results);
-    }
-  });
-});
-
-//getting bearingkits category from db
-app.get('/api/bearingkits', (req, res) => {
-  connection.query('SELECT * FROM fulldata WHERE subCategory LIKE ?', ['%bearingkits%'], (err, results) => {
-    if (err) {
-      res.status(500).send(err);
-    } else {
-      res.json(results);
-    }
-  });
-});
-
-//getting prevmain category from db
-app.get('/api/prevmain', (req, res) => {
-  connection.query('SELECT * FROM fulldata WHERE subCategory LIKE ?', ['%prevmain%'], (err, results) => {
-    if (err) {
-      res.status(500).send(err);
-    } else {
-      res.json(results);
-    }
-  });
-});
-
-//getting hrkit category from db
-app.get('/api/hrkit', (req, res) => {
-  connection.query('SELECT * FROM fulldata WHERE subCategory LIKE ?', ['%hrkit%'], (err, results) => {
-    if (err) {
-      res.status(500).send(err);
-    } else {
-      res.json(results);
-    }
-  });
-});
-
-
-app.get('/api/search', (req, res) => {
-  const searchTerm = req.query.term;
-  if (!searchTerm) {
-      return res.status(400)
-          .json(
-              {
-                  error: 'Search term is required'
-              }
-          );
-  }
-
-  const query = `
-  SELECT * FROM fulldata
-  WHERE Description LIKE ? OR partnumber LIKE ?
-`;
-
-  const searchValue = `%${searchTerm}%`;
-
-  connection.query(query, [searchValue, searchValue],
-      (err, results) => {
-          if (err) {
-              console
-                  .error('Error executing search query:', err);
-              return res.status(500)
-                  .json(
-                      {
-                          error: 'Internal server error'
-                      });
-          }
-
-          res.json(results);
-      });
-});
-
-app.post('/api/order', async (req, res) => {
-  const { formData, cartItems, orderNumber } = req.body;
-
-  if (!formData || !cartItems) {
-    return res.status(400).json({ error: 'No form data or cart items provided' });
+  if (category) {
+    query = `
+       
+   SELECT p.id, p.partnumber, p.Description, p.Price, s.quantity
+    FROM fulldata p
+    JOIN stock s ON p.id = s.product_id
+  
+      WHERE mainCategory =? OR subCategory =?
+    `;
+    queryParams = [category, category];
+  } else {
+    query = `
+      SELECT *
+      FROM fulldata
+    `;
+    queryParams = [];
   }
 
   try {
- 
-    await connection.promise().query('START TRANSACTION');
+    const [results] = await pool.query(query, queryParams);
+    res.json(results);
+  } catch (err) {
+    console.error('Error executing query:', err);
+    res.status(500).send('Internal Server Error');
+  }
+});
+{/** 
+app.get('/api/products', async (req, res) => {
+  const { country, minPrice, maxPrice, category } = req.query;
 
-   
-    const [orderResult] = await connection.promise().query(
+  const parsedMinPrice = parseFloat(minPrice);
+  const parsedMaxPrice = parseFloat(maxPrice);
+
+  if (isNaN(parsedMinPrice) || isNaN(parsedMaxPrice)) {
+    return res.status(400).send('Invalid price range');
+  }
+
+  if (!country) {
+    return res.status(400).send('Country code is required');
+  }
+
+  let query = `
+    SELECT p.id, p.partnumber, p.Description, pr.price, s.quantity
+    FROM fulldata p
+    LEFT JOIN stock s ON p.id = s.product_id
+    JOIN atlascopcoproduct_prices pr ON p.id = pr.product_id AND pr.country_code = ?
+    WHERE pr.price BETWEEN ? AND ?
+  `;
+  let queryParams = [country, parsedMinPrice, parsedMaxPrice];
+
+  if (category) {
+    query += ` AND (p.mainCategory = ? OR p.subCategory = ?)`;
+    queryParams.push(category, category);
+  }
+
+  try {
+    const [results] = await pool.query(query, queryParams);
+    res.json(results);
+  } catch (err) {
+    console.error('Error executing query:', err);
+    res.status(500).send('Internal Server Error');
+  }
+});
+*/}
+// Add other routes similarly
+
+app.post('/api/order', async (req, res) => {
+  const { formData, cartItems, orderNumber } = req.body;
+  if (!formData || !cartItems) {
+    return res.status(400).json({ error: 'No form data or cart items provided' });
+  }
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+    const [orderResult] = await connection.query(
       `INSERT INTO placing_orders (company_name, title, first_name, second_name, address1, address2, city, zip, phone, email, ordernumber) 
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
@@ -339,70 +155,36 @@ app.post('/api/order', async (req, res) => {
         orderNumber
       ]
     );
-
     const orderId = orderResult.insertId;
-
     for (const item of cartItems) {
-      await connection.promise().query(
+      await connection.query(
         `INSERT INTO order_items (order_id, description, quantity, price) 
          VALUES (?, ?, ?, ?)`,
         [orderId, item.Description, item.quantity, item.Price]
       );
     }
-
-    await connection.promise().query('COMMIT');
+    await connection.commit();
     res.status(201).json({ message: 'Order placed successfully', orderId });
-
   } catch (error) {
-
-    await connection.promise().query('ROLLBACK');
+    await connection.rollback();
     console.error('Error placing order:', error);
     res.status(500).send(error);
+  } finally {
+    connection.release();
   }
 });
-app.get('/product/:id', (req, res) => {
-  const productId = req.params.id;
-  const userLocation = req.query.location; 
-
-  const query = `
-      SELECT pp.price 
-      FROM product_prices pp
-      JOIN locations l ON pp.location_id = l.id
-      WHERE pp.product_id = ? AND l.name = ?
-  `;
-
-  db.query(query, [productId, userLocation], (err, results) => {
-      if (err) {
-          return res.status(500).json({ error: err.message });
-      }
-      if (results.length > 0) {
-          res.json({ price: results[0].price });
-      } else {
-          res.status(404).json({ error: 'Price not found for this location' });
-      }
-  });
-});
-
-
-
-
-
-
-
 
 const port = process.env.PORT || 3001;
-
-
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
 });
 
-
-app.get('/api/test-connection', (req, res) => {
-  connection.query('SELECT 1 + 1 AS solution', (err, results) => {
-    if (err) {
-      return res.status(500).send(err);
-    }
+app.get('/api/test-connection', async (req, res) => {
+  try {
+    const [results] = await pool.query('SELECT 1 + 1 AS solution');
     res.json({ message: 'Database connected', solution: results[0].solution });
-  });
+  } catch (err) {
+    console.error('Error executing query:', err);
+    res.status(500).send(err);
+  }
 });
