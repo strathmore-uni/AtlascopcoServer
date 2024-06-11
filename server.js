@@ -3,6 +3,8 @@ const mysql = require('mysql2/promise');
 const app = express();
 const cors = require('cors');
 require('dotenv').config();
+const { OAuth2Client } = require('google-auth-library');
+const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
 app.use(express.json());
 app.use(cors({
@@ -26,6 +28,22 @@ app.get('/', (req, res) => {
   res.send('Hello World!');
 });
 
+app.post('/api/login', async (req, res) => {
+  const { token } = req.body;
+  try {
+    console.log('Token:', token);
+    const ticket = await client.verifyIdToken({
+      idToken: token,
+      audience: process.env.GOOGLE_CLIENT_ID
+    });
+
+
+   
+  } catch (error) {
+    console.error('Error verifying token:', error);
+    res.status(401).send('Invalid token');
+  }
+});
 
 app.get('/api/fulldata', async (req, res) => {
   try {
@@ -37,12 +55,7 @@ app.get('/api/fulldata', async (req, res) => {
   }
 });
 
-
-
-
-
 app.get('/api/stockproducts', async (req, res) => {
-
   const query = `
    SELECT p.id, p.partnumber, p.Description, p.Price, s.quantity
     FROM fulldata p
@@ -59,19 +72,16 @@ app.get('/api/stockproducts', async (req, res) => {
 
 app.get('/api/products/:category?', async (req, res) => {
   const category = req.params.category;
-  const countryCode = req.query.country;
 
   let query;
   let queryParams;
 
   if (category) {
     query = `
-       
-   SELECT p.id, p.partnumber, p.Description, p.Price, s.quantity
-    FROM fulldata p
-    JOIN stock s ON p.id = s.product_id
-  
-      WHERE mainCategory =? OR subCategory =?
+       SELECT p.id, p.partnumber, p.Description, p.Price, s.quantity
+       FROM fulldata p
+       JOIN stock s ON p.id = s.product_id
+       WHERE mainCategory = ? OR subCategory = ?
     `;
     queryParams = [category, category];
   } else {
@@ -90,45 +100,6 @@ app.get('/api/products/:category?', async (req, res) => {
     res.status(500).send('Internal Server Error');
   }
 });
-{/** 
-app.get('/api/products', async (req, res) => {
-  const { country, minPrice, maxPrice, category } = req.query;
-
-  const parsedMinPrice = parseFloat(minPrice);
-  const parsedMaxPrice = parseFloat(maxPrice);
-
-  if (isNaN(parsedMinPrice) || isNaN(parsedMaxPrice)) {
-    return res.status(400).send('Invalid price range');
-  }
-
-  if (!country) {
-    return res.status(400).send('Country code is required');
-  }
-
-  let query = `
-    SELECT p.id, p.partnumber, p.Description, pr.price, s.quantity
-    FROM fulldata p
-    LEFT JOIN stock s ON p.id = s.product_id
-    JOIN atlascopcoproduct_prices pr ON p.id = pr.product_id AND pr.country_code = ?
-    WHERE pr.price BETWEEN ? AND ?
-  `;
-  let queryParams = [country, parsedMinPrice, parsedMaxPrice];
-
-  if (category) {
-    query += ` AND (p.mainCategory = ? OR p.subCategory = ?)`;
-    queryParams.push(category, category);
-  }
-
-  try {
-    const [results] = await pool.query(query, queryParams);
-    res.json(results);
-  } catch (err) {
-    console.error('Error executing query:', err);
-    res.status(500).send('Internal Server Error');
-  }
-});
-*/}
-// Add other routes similarly
 
 app.post('/api/order', async (req, res) => {
   const { formData, cartItems, orderNumber } = req.body;
@@ -171,6 +142,42 @@ app.post('/api/order', async (req, res) => {
     res.status(500).send(error);
   } finally {
     connection.release();
+  }
+});
+
+app.get('/api/orders', async (req, res) => {
+  const userId = req.query.userId;
+  const query = 'SELECT * FROM orders WHERE userId = ? ORDER BY orderDate DESC';
+
+  try {
+    const [results] = await pool.query(query, [userId]);
+    res.json(results);
+  } catch (error) {
+    console.error('Error fetching orders:', error);
+    res.status(500).send('Error fetching orders');
+  }
+});
+
+app.get('/api/search', async (req, res) => {
+  const searchTerm = req.query.term;
+  if (!searchTerm) {
+    return res.status(400).json({ error: 'Search term is required' });
+  }
+
+  const query = `
+    SELECT *
+    FROM fulldata
+    WHERE partnumber LIKE ? OR Description LIKE ?
+  `;
+
+  const searchValue = `%${searchTerm}%`;
+
+  try {
+    const [results] = await pool.query(query, [searchValue, searchValue]);
+    res.json(results);
+  } catch (err) {
+    console.error('Error executing search query:', err);
+    res.status(500).send('Internal Server Error');
   }
 });
 
