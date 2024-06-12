@@ -28,22 +28,6 @@ app.get('/', (req, res) => {
   res.send('Hello World!');
 });
 
-app.post('/api/login', async (req, res) => {
-  const { token } = req.body;
-  try {
-    console.log('Token:', token);
-    const ticket = await client.verifyIdToken({
-      idToken: token,
-      audience: process.env.GOOGLE_CLIENT_ID
-    });
-
-
-   
-  } catch (error) {
-    console.error('Error verifying token:', error);
-    res.status(401).send('Invalid token');
-  }
-});
 
 app.get('/api/fulldata', async (req, res) => {
   try {
