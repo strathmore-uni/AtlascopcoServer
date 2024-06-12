@@ -38,7 +38,7 @@ app.get('/api/fulldata', async (req, res) => {
     res.status(500).send(err);
   }
 });
-
+{/** 
 app.get('/api/stockproducts', async (req, res) => {
   const query = `
    SELECT p.id, p.partnumber, p.Description, p.Price, s.quantity
@@ -53,25 +53,32 @@ app.get('/api/stockproducts', async (req, res) => {
     res.status(500).send('Internal Server Error');
   }
 });
+*/}
+app.get('/', (req, res) => {
+  res.send('Hello World!');
+});
 
-app.get('/api/products/:category?', async (req, res) => {
-  const category = req.params.category;
+app.get('/api/products/:country?', async (req, res) => {
+  const { country } = req.params;
 
   let query;
   let queryParams;
 
-  if (category) {
+  if (country) {
     query = `
-       SELECT p.id, p.partnumber, p.Description, p.Price, s.quantity
+       SELECT p.id, p.partnumber, p.Description, 
+              IFNULL(cp.price, p.Price) AS Price, s.quantity
        FROM fulldata p
+       LEFT JOIN atlascopcoproduct_prices cp ON p.id = cp.product_id AND cp.country_code = ?
        JOIN stock s ON p.id = s.product_id
-       WHERE mainCategory = ? OR subCategory = ?
     `;
-    queryParams = [category, category];
+    queryParams = [country];
   } else {
     query = `
-      SELECT *
-      FROM fulldata
+      SELECT p.id, p.partnumber, p.Description, 
+             p.Price, s.quantity
+      FROM fulldata p
+      JOIN stock s ON p.id = s.product_id
     `;
     queryParams = [];
   }
@@ -84,6 +91,41 @@ app.get('/api/products/:category?', async (req, res) => {
     res.status(500).send('Internal Server Error');
   }
 });
+
+app.get('/api/productsCountry/:country?', async (req, res) => {
+  const { country } = req.params;
+
+  let query;
+  let queryParams;
+
+  if (country) {
+    query = `
+       SELECT p.id, p.partnumber, p.Description, 
+              IFNULL(cp.price, p.Price) AS Price, s.quantity
+       FROM fulldata p
+       LEFT JOIN atlascopcoproduct_prices cp ON p.id = cp.product_id AND cp.country_code = ?
+       JOIN stock s ON p.id = s.product_id
+    `;
+    queryParams = [country];
+  } else {
+    query = `
+      SELECT p.id, p.partnumber, p.Description, 
+             p.Price, s.quantity
+      FROM fulldata p
+      JOIN stock s ON p.id = s.product_id
+    `;
+    queryParams = [];
+  }
+
+  try {
+    const [results] = await pool.query(query, queryParams);
+    res.json(results);
+  } catch (err) {
+    console.error('Error executing query:', err);
+    res.status(500).send('Internal Server Error');
+  }
+});
+
 
 app.post('/api/order', async (req, res) => {
   const { formData, cartItems, orderNumber } = req.body;
