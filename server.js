@@ -28,7 +28,7 @@ app.get('/', (req, res) => {
   res.send('Hello World!');
 });
 
-
+{/** 
 app.get('/api/fulldata', async (req, res) => {
   try {
     const [results] = await pool.query('SELECT * FROM fulldata');
@@ -38,6 +38,8 @@ app.get('/api/fulldata', async (req, res) => {
     res.status(500).send(err);
   }
 });
+
+*/}
 {/** 
 app.get('/api/stockproducts', async (req, res) => {
   const query = `
@@ -54,11 +56,50 @@ app.get('/api/stockproducts', async (req, res) => {
   }
 });
 */}
-app.get('/', (req, res) => {
-  res.send('Hello World!');
+
+
+
+
+
+
+app.get('/api/products/:category?', async (req, res) => {
+  const category = req.params.category;
+
+ 
+
+  let query;
+  let queryParams = [];
+
+  if (category) {
+    query = `
+      SELECT p.id, p.partnumber, p.Description, p.Price, s.quantity
+      FROM fulldata p
+      JOIN stock s ON p.id = s.product_id
+      WHERE p.mainCategory = ? OR p.subCategory = ?
+    `;
+    queryParams = [category, category];
+  } else {
+    query = `
+      SELECT p.id, p.partnumber, p.Description, p.Price, s.quantity
+      FROM fulldata p
+      JOIN stock s ON p.id = s.product_id
+    `;
+  }
+
+  try {
+   
+    const [results] = await pool.query(query, queryParams);
+    res.json(results);
+  } catch (err) {
+    console.error('Error executing query:', err);
+    res.status(500).send('Internal Server Error');
+  }
 });
 
-app.get('/api/products/:country?', async (req, res) => {
+ 
+
+ 
+app.get('/api/Countryproducts/:country?', async (req, res) => {
   const { country } = req.params;
 
   let query;
@@ -66,19 +107,21 @@ app.get('/api/products/:country?', async (req, res) => {
 
   if (country) {
     query = `
-       SELECT p.id, p.partnumber, p.Description, 
-              IFNULL(cp.price, p.Price) AS Price, s.quantity
-       FROM fulldata p
-       LEFT JOIN atlascopcoproduct_prices cp ON p.id = cp.product_id AND cp.country_code = ?
-       JOIN stock s ON p.id = s.product_id
+      SELECT p.id, p.partnumber, p.Description, 
+             IFNULL(cp.price, p.Price) AS Price, SUM(s.quantity) AS quantity
+      FROM fulldata p
+      LEFT JOIN atlascopcoproduct_prices cp ON p.id = cp.product_id AND cp.country_code = ?
+      JOIN stock s ON p.id = s.product_id
+      GROUP BY p.id, p.partnumber, p.Description, IFNULL(cp.price, p.Price)
     `;
     queryParams = [country];
   } else {
     query = `
       SELECT p.id, p.partnumber, p.Description, 
-             p.Price, s.quantity
+             p.Price, SUM(s.quantity) AS quantity
       FROM fulldata p
       JOIN stock s ON p.id = s.product_id
+      GROUP BY p.id, p.partnumber, p.Description, p.Price
     `;
     queryParams = [];
   }
@@ -92,39 +135,6 @@ app.get('/api/products/:country?', async (req, res) => {
   }
 });
 
-app.get('/api/productsCountry/:country?', async (req, res) => {
-  const { country } = req.params;
-
-  let query;
-  let queryParams;
-
-  if (country) {
-    query = `
-       SELECT p.id, p.partnumber, p.Description, 
-              IFNULL(cp.price, p.Price) AS Price, s.quantity
-       FROM fulldata p
-       LEFT JOIN atlascopcoproduct_prices cp ON p.id = cp.product_id AND cp.country_code = ?
-       JOIN stock s ON p.id = s.product_id
-    `;
-    queryParams = [country];
-  } else {
-    query = `
-      SELECT p.id, p.partnumber, p.Description, 
-             p.Price, s.quantity
-      FROM fulldata p
-      JOIN stock s ON p.id = s.product_id
-    `;
-    queryParams = [];
-  }
-
-  try {
-    const [results] = await pool.query(query, queryParams);
-    res.json(results);
-  } catch (err) {
-    console.error('Error executing query:', err);
-    res.status(500).send('Internal Server Error');
-  }
-});
 
 
 app.post('/api/order', async (req, res) => {
@@ -191,21 +201,22 @@ app.get('/api/search', async (req, res) => {
   }
 
   const query = `
-    SELECT *
+    SELECT *, subCategory AS category
     FROM fulldata
-    WHERE partnumber LIKE ? OR Description LIKE ?
+    WHERE partnumber LIKE ? OR Description LIKE ? OR mainCategory LIKE ?
   `;
 
   const searchValue = `%${searchTerm}%`;
 
   try {
-    const [results] = await pool.query(query, [searchValue, searchValue]);
+    const [results] = await pool.query(query, [searchValue, searchValue, searchValue]);
     res.json(results);
   } catch (err) {
     console.error('Error executing search query:', err);
     res.status(500).send('Internal Server Error');
   }
 });
+
 
 const port = process.env.PORT || 3001;
 app.listen(port, () => {
