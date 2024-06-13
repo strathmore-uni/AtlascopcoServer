@@ -224,6 +224,30 @@ app.get('/api/search', async (req, res) => {
   }
 });
 
+app.get('/api/products/range/:category/:min/:max', async (req, res) => {
+  const category = req.params.category;
+  const minPrice = parseFloat(req.params.min); // Parse min price as float
+  const maxPrice = parseFloat(req.params.max); // Parse max price as float
+
+  let query;
+  let queryParams = [minPrice, maxPrice, category, category]; // Update queryParams order
+
+  query = `
+    SELECT p.id, p.partnumber, p.Description, p.Price, s.quantity
+    FROM fulldata p
+    JOIN stock s ON p.id = s.product_id
+    WHERE (p.mainCategory = ? OR p.subCategory = ?) AND p.Price >= ? AND p.Price <= ?
+  `;
+
+  try {
+    const [results] = await pool.query(query, queryParams);
+    res.json(results);
+  } catch (err) {
+    console.error('Error fetching products by price range and category:', err);
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+});
+
 
 
 
