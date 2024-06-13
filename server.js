@@ -195,27 +195,37 @@ app.get('/api/orders', async (req, res) => {
 });
 
 app.get('/api/search', async (req, res) => {
-  const searchTerm = req.query.term;
-  if (!searchTerm) {
-    return res.status(400).json({ error: 'Search term is required' });
-  }
+  const searchTerm = req.query.term || '';
+  const category = req.query.category || '';
 
-  const query = `
+  let query = `
     SELECT *, subCategory AS category
     FROM fulldata
-    WHERE partnumber LIKE ? OR Description LIKE ? OR mainCategory LIKE ?
+    WHERE (partnumber LIKE ? OR Description LIKE ? OR mainCategory LIKE ?)
   `;
-
+  
   const searchValue = `%${searchTerm}%`;
+  const queryParams = [searchValue, searchValue, searchValue];
+
+  if (category) {
+    query += ' AND (mainCategory = ? OR subCategory = ?)';
+    queryParams.push(category, category);
+  }
+
+ 
 
   try {
-    const [results] = await pool.query(query, [searchValue, searchValue, searchValue]);
+    const [results] = await pool.query(query, queryParams);
+    
     res.json(results);
   } catch (err) {
     console.error('Error executing search query:', err);
     res.status(500).send('Internal Server Error');
   }
 });
+
+
+
 
 
 const port = process.env.PORT || 3001;
