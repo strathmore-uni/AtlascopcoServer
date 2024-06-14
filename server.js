@@ -21,6 +21,7 @@ const pool = mysql.createPool({
   port: process.env.DB_PORT,
   waitForConnections: true,
   connectionLimit: 10,
+  connectTimeout: 10000,
   queueLimit: 0,
 });
 
@@ -199,30 +200,29 @@ app.get('/api/search', async (req, res) => {
   const category = req.query.category || '';
 
   let query = `
-    SELECT *, subCategory AS category
-    FROM fulldata
-    WHERE (partnumber LIKE ? OR Description LIKE ? OR mainCategory LIKE ?)
+    SELECT p.id, p.partnumber, p.Description, p.Price, s.quantity, p.subCategory AS category
+    FROM fulldata p
+    JOIN stock s ON p.id = s.product_id
+    WHERE (p.partnumber LIKE ? OR p.Description LIKE ? OR p.mainCategory LIKE ?)
   `;
-  
+
   const searchValue = `%${searchTerm}%`;
   const queryParams = [searchValue, searchValue, searchValue];
 
   if (category) {
-    query += ' AND (mainCategory = ? OR subCategory = ?)';
+    query += ' AND (p.mainCategory = ? OR p.subCategory = ?)';
     queryParams.push(category, category);
   }
 
- 
-
   try {
     const [results] = await pool.query(query, queryParams);
-    
     res.json(results);
   } catch (err) {
     console.error('Error executing search query:', err);
     res.status(500).send('Internal Server Error');
   }
 });
+
 
 app.get('/api/products/range/:category/:min/:max', async (req, res) => {
   const category = req.params.category;
