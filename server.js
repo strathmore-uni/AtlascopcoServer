@@ -2,6 +2,7 @@ const express = require('express');
 const mysql = require('mysql2/promise');
 const app = express();
 const cors = require('cors');
+const path = require('path');
 require('dotenv').config();
 const { OAuth2Client } = require('google-auth-library');
 const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
@@ -24,6 +25,8 @@ const pool = mysql.createPool({
   connectTimeout: 10000,
   queueLimit: 0,
 });
+
+app.use(express.static(path.join(__dirname, 'public')));
 
 app.get('/', (req, res) => {
   res.send('Hello World!');
