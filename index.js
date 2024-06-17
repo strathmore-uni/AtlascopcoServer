@@ -9,10 +9,11 @@ const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
 app.use(express.json());
 app.use(cors({
-  origin: 'http://localhost:3000',
+  origin: '*', // Allow requests from any domain for testing. Replace '*' with your frontend domain in production.
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
+
 
 const pool = mysql.createPool({
   host: process.env.INSTANCE_HOST,
@@ -27,6 +28,7 @@ const pool = mysql.createPool({
 });
 
 app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname, 'atlascorpobusiness/build')));
 
 app.get('/', (req, res) => {
   res.send('Hello World!');
@@ -62,6 +64,15 @@ app.get('/api/stockproducts', async (req, res) => {
 */}
 
 
+app.get('/api/test-db-connection', async (req, res) => {
+  try {
+    const [results] = await pool.query('SELECT 1 + 1 AS solution');
+    res.json({ message: 'Database connected', solution: results[0].solution });
+  } catch (err) {
+    console.error('Error executing query:', err);
+    res.status(500).send('Internal Server Error');
+  }
+});
 
 
 
