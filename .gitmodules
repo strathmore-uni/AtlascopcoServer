@@ -1,0 +1,4 @@
+[submodule "AtlascopcoServer"]
+    path = AtlascopcoServer
+    url = https://github.com/Mikee100/AtlascopcoServer.git 
+    
