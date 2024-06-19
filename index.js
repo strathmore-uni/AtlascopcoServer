@@ -262,7 +262,27 @@ app.get('/api/products/range/:category/:min/:max', async (req, res) => {
   }
 });
 
+app.get('/api/products/partnumber/:partnumber', async (req, res) => {
+  const { partnumber } = req.params;
 
+  try {
+    const query = `
+      SELECT p.partnumber, p.Description, p.Price
+      FROM fulldata p
+      WHERE p.partnumber = ?
+    `;
+    const [results] = await pool.query(query, [partnumber]);
+
+    if (results.length > 0) {
+      res.json(results[0]);
+    } else {
+      res.status(404).json({ message: 'Product not found' });
+    }
+  } catch (error) {
+    console.error('Error fetching product:', error);
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+});
 
 
 
