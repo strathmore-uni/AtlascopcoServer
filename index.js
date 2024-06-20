@@ -15,6 +15,7 @@ app.use(cors({
 }));
 
 
+
 const pool = mysql.createPool({
   host: process.env.INSTANCE_HOST,
   user: process.env.DB_USERNAME,
