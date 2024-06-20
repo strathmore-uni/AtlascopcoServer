@@ -1,23 +1,12 @@
-runtime: nodejs
-env: flex
+runtime: nodejs20
+service: server
 
 env_variables:
-  NODE_ENV: 'production'
-  INSTANCE_HOST: '34.122.70.186'
-  DB_USERNAME: 'atlascopco_admin'
-  DB_PASSWORD: '10028mike.'
-  DATABASE: 'AtlasCopco'
-  DB_PORT: '3306'
-  GOOGLE_CLIENT_ID: '595577353691-4ufofq7oqgi7qn8sac6g0gqf7qf57j7q.apps.googleusercontent.com'
+  DB_socketPath: "/ultra-mediator-423907-a4:us-central1:atlascopcos"
+  DB_USERNAME: "atlascopco_admin"
+  DB_PASSWORD: "10028mike."
+  DATABASE: "AtlasCopco"
+  NODE_ENV: "production"
 
-instance_class: F2
-
-automatic_scaling:
-  min_num_instances: 1
-  max_num_instances: 5
-  cpu_utilization:
-    target_utilization: 0.6
-
-handlers:
-- url: /.*
-  script: auto
+beta_settings:
+  cloud_sql_instances: "ultra-mediator-423907-a4:us-central1:atlascopcos"

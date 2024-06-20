@@ -2,7 +2,7 @@ const express = require('express');
 const mysql = require('mysql2/promise');
 const app = express();
 const cors = require('cors');
-const path = require('path');
+
 require('dotenv').config();
 const { OAuth2Client } = require('google-auth-library');
 const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
@@ -26,23 +26,24 @@ const pool = mysql.createPool({
   connectTimeout: 10000,
   queueLimit: 0,
 });
-
+{/** 
+const path = require('path');
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.static(path.join(__dirname, 'atlascorpobusiness/build')));
-
+*/}
 app.get('/', (req, res) => {
   res.send('Hello World!');
 });
 
-app.get('/api/test-db-connection', async (req, res) => {
-  try {
-    const [results] = await pool.query('SELECT 1 + 1 AS solution');
-    res.json({ message: 'Database connected', solution: results[0].solution });
-  } catch (err) {
-    console.error('Error executing query:', err);
-    res.status(500).send('Internal Server Error');
-  }
-});
+{/** 
+if (process.env.NODE_ENV === 'production') {
+  poolConfig.socketPath = process.env.DB_socketPath;
+} else {
+  poolConfig.host = '127.0.0.1';
+ 
+}
+*/}
+
 {/** 
 app.get('/api/fulldata', async (req, res) => {
   try {
