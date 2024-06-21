@@ -21,7 +21,7 @@ const pool = mysql.createPool({
   password: process.env.DB_PASSWORD,
   database: process.env.DATABASE,
   port: process.env.DB_PORT,
-  socketPath: process.env.DB_SOCKET_PATH,
+  
   waitForConnections: true,
   connectionLimit: 10,
   connectTimeout: 10000,
@@ -33,6 +33,7 @@ const pool = mysql.createPool({
 const path = require('path');
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.static(path.join(__dirname, 'atlascorpobusiness/build')));
+socketPath: process.env.DB_SOCKET_PATH,
 */}
 app.get('/', (req, res) => {
   res.send('Hello World!');
