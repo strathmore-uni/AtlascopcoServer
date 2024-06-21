@@ -28,14 +28,7 @@ const pool = mysql.createPool({
   queueLimit: 0,
 });
 
-console.log('DB Config:', {
-  host: process.env.INSTANCE_HOST,
-  user: process.env.DB_USERNAME,
-  password: process.env.DB_PASSWORD,
-  database: process.env.DATABASE,
-  port: process.env.DB_PORT,
-  socketPath: process.env.DB_SOCKET_PATH
-})
+
 {/** 
 const path = require('path');
 app.use(express.static(path.join(__dirname, 'public')));
