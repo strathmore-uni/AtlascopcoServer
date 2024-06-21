@@ -1,0 +1,11 @@
+runtime: nodejs20
+service: indexserver
+
+env_variables:
+  DB_SOCKET_PATH: "/cloudsql/ultra-mediator-423907-a4:us-central1:atlascopco"
+  DB_USERNAME: "atlascopco_admin"
+  INSTANCE_HOST: "34.122.70.186"
+  DB_PASSWORD: "10028mike."
+  DATABASE: "AtlasCopco"
+  NODE_ENV: "production"
+

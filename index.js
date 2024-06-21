@@ -21,11 +21,21 @@ const pool = mysql.createPool({
   password: process.env.DB_PASSWORD,
   database: process.env.DATABASE,
   port: process.env.DB_PORT,
+  socketPath: process.env.DB_SOCKET_PATH,
   waitForConnections: true,
   connectionLimit: 10,
   connectTimeout: 10000,
   queueLimit: 0,
 });
+
+console.log('DB Config:', {
+  host: process.env.INSTANCE_HOST,
+  user: process.env.DB_USERNAME,
+  password: process.env.DB_PASSWORD,
+  database: process.env.DATABASE,
+  port: process.env.DB_PORT,
+  socketPath: process.env.DB_SOCKET_PATH
+})
 {/** 
 const path = require('path');
 app.use(express.static(path.join(__dirname, 'public')));
@@ -35,14 +45,14 @@ app.get('/', (req, res) => {
   res.send('Hello World!');
 });
 
-{/** 
+
 if (process.env.NODE_ENV === 'production') {
-  poolConfig.socketPath = process.env.DB_socketPath;
+  pool.socketPath = process.env.DB_SOCKET_PATH;
 } else {
-  poolConfig.host = '127.0.0.1';
+  pool.host = process.env.INSTANCE_HOST;
  
 }
-*/}
+
 
 {/** 
 app.get('/api/fulldata', async (req, res) => {
