@@ -1,5 +1,5 @@
 runtime: nodejs20
-service: indexserver
+service: myindexserver
 
 env_variables:
   DB_SOCKET_PATH: "/cloudsql/ultra-mediator-423907-a4:us-central1:atlascopco"

@@ -46,6 +46,7 @@ try {
     password: process.env.DB_PASSWORD,
     database: process.env.DATABASE,
     port: process.env.DB_PORT,
+    socketPath: process.env.DB_SOCKET_PATH,
     ssl: ssl,
     waitForConnections: true,
     connectionLimit: 10,
