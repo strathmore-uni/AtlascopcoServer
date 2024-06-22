@@ -2,6 +2,9 @@ const express = require('express');
 const mysql = require('mysql2/promise');
 const app = express();
 const cors = require('cors');
+const fs = require('fs');
+const path = require('path')
+const https = require('https');
 
 require('dotenv').config();
 const { OAuth2Client } = require('google-auth-library');
@@ -9,25 +12,49 @@ const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
 app.use(express.json());
 app.use(cors({
-  origin: 'https://ultra-mediator-423907-a4.uc.r.appspot.com', 
+  origin: '*', 
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
 
-const pool = mysql.createPool({
-  host: process.env.INSTANCE_HOST,
-  user: process.env.DB_USERNAME,
-  password: process.env.DB_PASSWORD,
-  database: process.env.DATABASE,
-  port: process.env.DB_PORT,
-  
-  waitForConnections: true,
-  connectionLimit: 10,
-  connectTimeout: 20000, 
-  queueLimit: 0,
-});
+// Try to read SSL certificates with error handling
+let ssl;
+try {   
+  ssl = {
+    ca: fs.readFileSync(path.join(__dirname,'cert','server-ca.pem' )),
+    key: fs.readFileSync(path.join(__dirname,'cert','client-key.pem' )),
+    cert: fs.readFileSync(path.join(__dirname,'cert','client-cert.pem' ))
+  };
+  console.log('SSL certificates loaded successfully.');
+} catch (error) {
+  console.error('Error loading SSL certificates:', error);
+}
 
+// Check if SSL configuration is correct
+if (ssl) {
+  console.log('SSL Configuration:', ssl);
+} else {
+  console.error('SSL configuration is not set up correctly.');
+}
+let pool;
+try {
+  pool = mysql.createPool({
+    host: process.env.INSTANCE_HOST,
+    user: process.env.DB_USERNAME,
+    password: process.env.DB_PASSWORD,
+    database: process.env.DATABASE,
+    port: process.env.DB_PORT,
+    ssl: ssl,
+    waitForConnections: true,
+    connectionLimit: 10,
+    connectTimeout: 20000,
+    queueLimit: 0,
+  });
+  console.log('Database connection pool created successfully.');
+} catch (error) {
+  console.error('Error creating database connection pool:', error);
+}
 
 {/** 
 const path = require('path');
@@ -38,7 +65,7 @@ socketPath: process.env.DB_SOCKET_PATH,
 app.get('/', (req, res) => {
   res.send('Hello World!');
 });
-
+const httpsServer = https.createServer(ssl, app);
 
 if (process.env.NODE_ENV === 'production') {
   pool.socketPath = process.env.DB_SOCKET_PATH;
@@ -292,7 +319,7 @@ app.get('/api/products/partnumber/:partnumber', async (req, res) => {
 
 
 const port = process.env.PORT || 3001;
-app.listen(port, () => {
+httpsServer.listen(port, () => {
   console.log(`Server running on port ${port}`);
 });
 
