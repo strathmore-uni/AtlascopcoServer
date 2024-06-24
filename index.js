@@ -7,20 +7,36 @@ const path = require('path')
 const https = require('https');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
+const bodyParser = require('body-parser');
+const session = require('express-session');
 
 require('dotenv').config();
 const { OAuth2Client } = require('google-auth-library');
 const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
+app.use(express.json());
+app.use(bodyParser.json());
+app.use(bodyParser.urlencoded({ extended: true }));
 
 app.use(express.json());
 app.use(cors());
 app.use(cors({
-  origin: '*',
-  methods: 'GET,POST,PUT,DELETE',
-  credentials: true,
+  origin: 'https://localhost:3000', // Allow requests from this origin
+  credentials: true, // Allow credentials (e.g., cookies) to be sent in requests
+  methods: ['GET', 'POST', 'PUT', 'DELETE'], // Allow these HTTP methods
+  headers: ['Content-Type', 'Authorization'] 
 }));
 
+app.use(bodyParser.json());
+app.use(bodyParser.urlencoded({ extended: true }));
+
+
+app.use(session({
+  secret: 'your_secret_key',
+  resave: false,
+  saveUninitialized: true,
+  cookie: { secure: true } // Set to true if using HTTPS
+}));
 
 // Try to read SSL certificates with error handling
 let ssl;
@@ -74,36 +90,9 @@ if (process.env.NODE_ENV === 'production') {
 }
 
 
-{/** 
-app.get('/api/fulldata', async (req, res) => {
-  try {
-    const [results] = await pool.query('SELECT * FROM fulldata');
-    res.json(results);
-  } catch (err) {
-    console.error('Error executing query:', err);
-    res.status(500).send(err);
-  }
-});
 
-*/}
-{/** 
-app.get('/api/stockproducts', async (req, res) => {
-  const query = `
-   SELECT p.id, p.partnumber, p.Description, p.Price, s.quantity
-    FROM fulldata p
-    JOIN stock s ON p.id = s.product_id
-  `;
-  try {
-    const [results] = await pool.query(query);
-    res.json(results);
-  } catch (err) {
-    console.error('Error executing query:', err);
-    res.status(500).send('Internal Server Error');
-  }
-});
-*/}
 
-  
+
   app.post('/api/register', (req, res) => {
     const query = `
       INSERT INTO registration (
@@ -160,48 +149,64 @@ app.get('/api/stockproducts', async (req, res) => {
     });
   });
   
+  app.post('/login', (req, res) => {
+    const sql = "SELECT * FROM registration WHERE email = ? AND password = ?";
+    pool.query(sql, [req.body.email, req.body.password])
+      .then(([rows, fields]) => {
+        if (rows.length > 0) {
+          return res.json("Login Successfull");
+          
+        }
+        return res.json(rows);
+      })
+      .catch(err => {
+        console.error(err);
+        return res.json("Login Failed");
+      });
+  });
   
 
+app.get('/myproducts/:companyId', async (req, res) => {
+  const { companyId } = req.params;
 
+  try {
+      const [company] = await pool.query('SELECT country FROM Registration WHERE id = ?', [companyId]);
 
+      if (company.length === 0) {
+          return res.status(404).json({ error: 'Company not found' });
+      }
 
-  app.post('/login', async (req, res) => {
-    const query = 'SELECT * FROM registration WHERE email=?';
-    
-    // Using try-catch to handle async/await errors
-    try {
-        // Using await to wait for the result of the query
-        const data = await pool.query(query, [req.body.email]);
+      const countryCode = company[0].country;
 
-        // Check if data.length > 0 to determine if user exists
-        if (data.length > 0) {
-            // Use bcrypt.compare to compare passwords
-            bcrypt.compare(req.body.password.toString(), data[0].password, (err, response) => {
-                if (err) {
-                    // Handle bcrypt error
-                    console.error(err);
-                    return res.json({ Error: "Error comparing passwords" });
-                }
-                if (response) {
-                    // Passwords match
-                    return res.json({ Status: "Success" });
-                } else {
-                    // Passwords do not match
-                    return res.json({ Error: "Password not matched" });
-                }
-            });
-        } else {
-            // No user found with the given email
-            return res.json({ Error: "No email existed" });
-        }
-    } catch (err) {
-        // Handle query execution error
-        console.error(err);
-        return res.json({ Error: "Database error" });
-    }
+      const [products] = await pool.query(
+          `SELECT p.partnumber,p.Description, pr.price
+          FROM fulldata p
+          JOIN atlascopcoproduct_prices pr ON p.id = pr.productId
+          WHERE pr.countryCode = ?`,
+          [countryCode]
+      );
+
+      res.json(products);
+  } catch (err) {
+      res.status(500).json({ error: err.message });
+  }
 });
 
+app.get('/myproducts/kenya', async (req, res) => {
+  try {
+      const [products] = await pool.query(
+          `SELECT p.Description, pr.price
+          FROM fulldata p
+          JOIN atlascopcoproduct_prices pr ON p.id = pr.productId
+          WHERE pr.countryCode = 'KE'`
+      );
 
+      res.json(products);
+  } catch (err) {
+      res.status(500).json({ error: err.message });
+  }
+});
+  
 
 app.get('/api/products/:category?', async (req, res) => {
   const category = req.params.category;
