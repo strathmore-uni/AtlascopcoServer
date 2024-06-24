@@ -5,18 +5,21 @@ const cors = require('cors');
 const fs = require('fs');
 const path = require('path')
 const https = require('https');
+const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
 
 require('dotenv').config();
 const { OAuth2Client } = require('google-auth-library');
 const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
+
 app.use(express.json());
-app.use(function(req, res, next) {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  next();
-});
+app.use(cors());
+app.use(cors({
+  origin: 'http://localhost:3000',
+  methods: 'GET,POST,PUT,DELETE',
+  credentials: true,
+}));
 
 
 // Try to read SSL certificates with error handling
@@ -27,17 +30,12 @@ try {
     key: fs.readFileSync(path.join(__dirname,'cert','client-key.pem' )),
     cert: fs.readFileSync(path.join(__dirname,'cert','client-cert.pem' ))
   };
-  console.log('SSL certificates loaded successfully.');
+  
 } catch (error) {
   console.error('Error loading SSL certificates:', error);
 }
+salt=10;
 
-// Check if SSL configuration is correct
-if (ssl) {
-  console.log('SSL Configuration:', ssl);
-} else {
-  console.error('SSL configuration is not set up correctly.');
-}
 let pool;
 try {
   pool = mysql.createPool({
@@ -46,14 +44,13 @@ try {
     password: process.env.DB_PASSWORD,
     database: process.env.DATABASE,
     port: process.env.DB_PORT,
-    socketPath: process.env.DB_SOCKET_PATH,
     ssl: ssl,
     waitForConnections: true,
     connectionLimit: 10,
     connectTimeout: 20000,
     queueLimit: 0,
   });
-  console.log('Database connection pool created successfully.');
+ 
 } catch (error) {
   console.error('Error creating database connection pool:', error);
 }
@@ -106,8 +103,103 @@ app.get('/api/stockproducts', async (req, res) => {
 });
 */}
 
+  
+  app.post('/api/register', (req, res) => {
+    const query = `
+      INSERT INTO registration (
+        companyName, title, firstName, secondName, address1, address2, city, zip, phone, email, password, country
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `;
+  
+    // Extract saltRounds from your environment variables or set it to a default value
+    const saltRounds = parseInt(process.env.SALT_ROUNDS) || 10;
+  
+    bcrypt.hash(req.body.password.toString(), saltRounds, (err, hash) => {
+      if (err) {
+        console.error('Error hashing password:', err);
+        return res.status(500).json({ error: 'Error hashing password' });
+      }
+  
+      // Destructure the request body to get the registration details
+      const {
+        companyName,
+        title,
+        firstName,
+        secondName,
+        address1,
+        address2,
+        city,
+        zip,
+        phone,
+        email,
+        country
+      } = req.body;
+  
+      const values = [
+        companyName,
+        title,
+        firstName,
+        secondName,
+        address1,
+        address2,
+        city,
+        zip,
+        phone,
+        email,
+        hash, // Use the hashed password
+        country
+      ];
+  
+      pool.query(query, values, (err, results) => {
+        if (err) {
+          console.error('Error inserting data into MySQL:', err);
+          return res.status(500).send('Server error');
+        }
+        res.status(200).send('User registered successfully');
+      });
+    });
+  });
+  
+  
 
 
+
+
+  app.post('/login', async (req, res) => {
+    const query = 'SELECT * FROM registration WHERE email=?';
+    
+    // Using try-catch to handle async/await errors
+    try {
+        // Using await to wait for the result of the query
+        const data = await pool.query(query, [req.body.email]);
+
+        // Check if data.length > 0 to determine if user exists
+        if (data.length > 0) {
+            // Use bcrypt.compare to compare passwords
+            bcrypt.compare(req.body.password.toString(), data[0].password, (err, response) => {
+                if (err) {
+                    // Handle bcrypt error
+                    console.error(err);
+                    return res.json({ Error: "Error comparing passwords" });
+                }
+                if (response) {
+                    // Passwords match
+                    return res.json({ Status: "Success" });
+                } else {
+                    // Passwords do not match
+                    return res.json({ Error: "Password not matched" });
+                }
+            });
+        } else {
+            // No user found with the given email
+            return res.json({ Error: "No email existed" });
+        }
+    } catch (err) {
+        // Handle query execution error
+        console.error(err);
+        return res.json({ Error: "Database error" });
+    }
+});
 
 
 
