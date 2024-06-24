@@ -16,7 +16,7 @@ const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 app.use(express.json());
 app.use(cors());
 app.use(cors({
-  origin: 'http://localhost:3000',
+  origin: '*',
   methods: 'GET,POST,PUT,DELETE',
   credentials: true,
 }));
