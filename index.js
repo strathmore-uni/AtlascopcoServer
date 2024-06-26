@@ -71,6 +71,25 @@ try {
   console.error('Error creating database connection pool:', error);
 }
 
+const verifyToken = (req, res, next) => {
+  const token = req.headers.authorization;
+
+  if (!token) {
+    return res.status(401).json({ error: 'Unauthorized: No token provided' });
+  }
+
+  jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
+    if (err) {
+      console.error('Error verifying token:', err);
+      return res.status(401).json({ error: 'Unauthorized: Invalid token' });
+    }
+    
+    // Token is valid, set decoded user information on request object
+    req.user = decoded;
+    next();
+  });
+};
+
 {/** 
 const path = require('path');
 app.use(express.static(path.join(__dirname, 'public')));
@@ -92,7 +111,7 @@ if (process.env.NODE_ENV === 'production') {
 
 
 
-
+{/** 
   app.post('/api/register', (req, res) => {
     const query = `
       INSERT INTO registration (
@@ -148,16 +167,64 @@ if (process.env.NODE_ENV === 'production') {
       });
     });
   });
+  */}
+  app.post('/api/register', (req, res) => {
+    const query = `
+      INSERT INTO registration (
+        companyName, title, firstName, secondName, address1, address2, city, zip, phone, email, password, country
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `;
+  
+    // Destructure the request body to get the registration details
+    const {
+      companyName,
+      title,
+      firstName,
+      secondName,
+      address1,
+      address2,
+      city,
+      zip,
+      phone,
+      email,
+      password, // Assuming password is already hashed before sending
+      country
+    } = req.body;
+  
+    const values = [
+      companyName,
+      title,
+      firstName,
+      secondName,
+      address1,
+      address2,
+      city,
+      zip,
+      phone,
+      email,
+      password, // Use the pre-hashed password
+      country
+    ];
+  
+    pool.query(query, values, (err, results) => {
+      if (err) {
+        console.error('Error inserting data into MySQL:', err);
+        return res.status(500).send('Server error');
+      }
+      res.status(200).send('User registered successfully');
+    });
+  });
   
   app.post('/login', (req, res) => {
     const sql = "SELECT * FROM registration WHERE email = ? AND password = ?";
-    pool.query(sql, [req.body.email, req.body.password])
-      .then(([rows, fields]) => {
-        if (rows.length > 0) {
+     pool.query(sql, [req.body.email, req.body.password])
+      .then(([users]) => {
+        if (users.length > 0) {
           return res.json("Login Successfull");
-          
         }
-        return res.json(rows);
+        const user = users[0];
+        req.session.userId = user.id;
+        req.session.userEmail = user.email;
       })
       .catch(err => {
         console.error(err);
@@ -166,123 +233,100 @@ if (process.env.NODE_ENV === 'production') {
   });
   
 
-app.get('/myproducts/:companyId', async (req, res) => {
-  const { companyId } = req.params;
-
-  try {
-      const [company] = await pool.query('SELECT country FROM Registration WHERE id = ?', [companyId]);
-
-      if (company.length === 0) {
-          return res.status(404).json({ error: 'Company not found' });
+  app.get('/api/myproducts', async (req, res) => {
+    const userEmail = req.query.email;
+  
+    if (!userEmail) {
+      console.error('No user email provided');
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+  
+    try {
+      // Fetch the country code based on user's email from the registration table
+      const countryCodeQuery = 'SELECT country FROM registration WHERE email =?';
+      const [countryCodeResult] = await pool.query(countryCodeQuery, [userEmail]);
+  
+      if (countryCodeResult.length === 0) {
+        console.error(`User not found with email: ${userEmail}`);
+        return res.status(404).json({ error: 'User not found' });
       }
-
-      const countryCode = company[0].country;
-
-      const [products] = await pool.query(
-          `SELECT p.partnumber,p.Description, pr.price
-          FROM fulldata p
-          JOIN atlascopcoproduct_prices pr ON p.id = pr.productId
-          WHERE pr.countryCode = ?`,
-          [countryCode]
-      );
-
+  
+      const userCountryCode = countryCodeResult[0].country;
+      console.log(`User country code: ${userCountryCode}`);
+  
+      // Query to fetch products with prices based on user's country code
+      const productsQuery = `
+        SELECT p.id, p.partnumber, p.Description, pp.price AS Price, s.quantity
+        FROM fulldata p
+        JOIN stock s ON p.id = s.product_id
+        JOIN atlascopcoproduct_prices pp ON p.id = pp.product_id
+        WHERE pp.country_code =?
+      `;
+      const [products] = await pool.query(productsQuery, [userCountryCode]);
+  
+      console.log(`Fetched ${products.length} products`);
       res.json(products);
-  } catch (err) {
-      res.status(500).json({ error: err.message });
-  }
-});
-
-app.get('/myproducts/kenya', async (req, res) => {
-  try {
-      const [products] = await pool.query(
-          `SELECT p.Description, pr.price
+    } catch (error) {
+      console.error('Error fetching products:', error);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  });
+ 
+  app.get('/api/products/:category?', async (req, res) => {
+    const category = req.params.category;
+    const userEmail = req.query.email;
+  
+    if (!userEmail) {
+      console.error('No user email provided');
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+  
+    try {
+      // Fetch the country code based on user's email from the registration table
+      const countryCodeQuery = 'SELECT country FROM registration WHERE email =?';
+      const [countryCodeResult] = await pool.query(countryCodeQuery, [userEmail]);
+  
+      if (countryCodeResult.length === 0) {
+        console.error(`User not found with email: ${userEmail}`);
+        return res.status(404).json({ error: 'User not found' });
+      }
+  
+      const userCountryCode = countryCodeResult[0].country;
+      console.log(`User country code: ${userCountryCode}`);
+  
+      let query;
+      let queryParams = [userCountryCode];
+  
+      if (category) {
+        query = `
+          SELECT p.id, p.partnumber, p.Description, pp.price AS Price, s.quantity
           FROM fulldata p
-          JOIN atlascopcoproduct_prices pr ON p.id = pr.productId
-          WHERE pr.countryCode = 'KE'`
-      );
-
-      res.json(products);
-  } catch (err) {
-      res.status(500).json({ error: err.message });
-  }
-});
+          JOIN stock s ON p.id = s.product_id
+          JOIN atlascopcoproduct_prices pp ON p.id = pp.product_id
+          WHERE (p.mainCategory = ? OR p.subCategory = ?) AND pp.country_code =?
+        `;
+        queryParams = [category, category, userCountryCode];
+      } else {
+        query = `
+          SELECT p.id, p.partnumber, p.Description, pp.price AS Price, s.quantity
+          FROM fulldata p
+          JOIN stock s ON p.id = s.product_id
+          JOIN atlascopcoproduct_prices pp ON p.id = pp.product_id
+          WHERE pp.country_code =?
+        `;
+      }
+  
+      const [results] = await pool.query(query, queryParams);
+      console.log(`Fetched ${results.length} products`);
+      res.json(results);
+    } catch (err) {
+      console.error('Error fetching products:', err);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  });
   
 
-app.get('/api/products/:category?', async (req, res) => {
-  const category = req.params.category;
-
  
-
-  let query;
-  let queryParams = [];
-
-  if (category) {
-    query = `
-      SELECT p.id, p.partnumber, p.Description, p.Price, s.quantity
-      FROM fulldata p
-      JOIN stock s ON p.id = s.product_id
-      WHERE p.mainCategory = ? OR p.subCategory = ?
-    `;
-    queryParams = [category, category];
-  } else {
-    query = `
-      SELECT p.id, p.partnumber, p.Description, p.Price, s.quantity
-      FROM fulldata p
-      JOIN stock s ON p.id = s.product_id
-    `;
-  }
-
-  try {
-   
-    const [results] = await pool.query(query, queryParams);
-    res.json(results);
-  } catch (err) {
-    console.error('Error executing query:', err);
-    res.status(500).send('Internal Server Error');
-  }
-});
-
- 
-
- 
-app.get('/api/Countryproducts/:country?', async (req, res) => {
-  const { country } = req.params;
-
-  let query;
-  let queryParams;
-
-  if (country) {
-    query = `
-      SELECT p.id, p.partnumber, p.Description, 
-             IFNULL(cp.price, p.Price) AS Price, SUM(s.quantity) AS quantity
-      FROM fulldata p
-      LEFT JOIN atlascopcoproduct_prices cp ON p.id = cp.product_id AND cp.country_code = ?
-      JOIN stock s ON p.id = s.product_id
-      GROUP BY p.id, p.partnumber, p.Description, IFNULL(cp.price, p.Price)
-    `;
-    queryParams = [country];
-  } else {
-    query = `
-      SELECT p.id, p.partnumber, p.Description, 
-             p.Price, SUM(s.quantity) AS quantity
-      FROM fulldata p
-      JOIN stock s ON p.id = s.product_id
-      GROUP BY p.id, p.partnumber, p.Description, p.Price
-    `;
-    queryParams = [];
-  }
-
-  try {
-    const [results] = await pool.query(query, queryParams);
-    res.json(results);
-  } catch (err) {
-    console.error('Error executing query:', err);
-    res.status(500).send('Internal Server Error');
-  }
-});
-
-
-
 app.post('/api/order', async (req, res) => {
   const { formData, cartItems, orderNumber } = req.body;
   if (!formData || !cartItems) {
@@ -343,23 +387,42 @@ app.get('/api/orders', async (req, res) => {
 app.get('/api/search', async (req, res) => {
   const searchTerm = req.query.term || '';
   const category = req.query.category || '';
+  const userEmail = req.query.email;
 
-  let query = `
-    SELECT p.id, p.partnumber, p.Description, p.Price, s.quantity, p.subCategory AS category
-    FROM fulldata p
-    JOIN stock s ON p.id = s.product_id
-    WHERE (p.partnumber LIKE ? OR p.Description LIKE ? OR p.mainCategory LIKE ?)
-  `;
-
-  const searchValue = `%${searchTerm}%`;
-  const queryParams = [searchValue, searchValue, searchValue];
-
-  if (category) {
-    query += ' AND (p.mainCategory = ? OR p.subCategory = ?)';
-    queryParams.push(category, category);
+  if (!userEmail) {
+    console.error('No user email provided');
+    return res.status(401).json({ error: 'Unauthorized' });
   }
 
   try {
+    // Fetch the country code based on user's email from the registration table
+    const countryCodeQuery = 'SELECT country FROM registration WHERE email = ?';
+    const [countryCodeResult] = await pool.query(countryCodeQuery, [userEmail]);
+
+    if (countryCodeResult.length === 0) {
+      console.error(`User not found with email: ${userEmail}`);
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const userCountryCode = countryCodeResult[0].country;
+    console.log(`User country code: ${userCountryCode}`);
+
+    let query = `
+      SELECT p.id, p.partnumber, p.Description, pp.price AS Price, s.quantity, p.subCategory AS category
+      FROM fulldata p
+      JOIN stock s ON p.id = s.product_id
+      JOIN atlascopcoproduct_prices pp ON p.id = pp.product_id
+      WHERE pp.country_code = ? AND (p.partnumber LIKE ? OR p.Description LIKE ? OR p.mainCategory LIKE ?)
+    `;
+
+    const searchValue = `%${searchTerm}%`;
+    const queryParams = [userCountryCode, searchValue, searchValue, searchValue];
+
+    if (category) {
+      query += ' AND (p.mainCategory = ? OR p.subCategory = ?)';
+      queryParams.push(category, category);
+    }
+
     const [results] = await pool.query(query, queryParams);
     res.json(results);
   } catch (err) {
@@ -367,6 +430,7 @@ app.get('/api/search', async (req, res) => {
     res.status(500).send('Internal Server Error');
   }
 });
+
 
 
 app.get('/api/products/range/:category/:min/:max', async (req, res) => {
