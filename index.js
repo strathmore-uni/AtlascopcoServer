@@ -21,7 +21,7 @@ app.use(bodyParser.urlencoded({ extended: true }));
 app.use(express.json());
 app.use(cors());
 app.use(cors({
-  origin: 'https://localhost:3000', // Allow requests from this origin
+  origin: '*', // Allow requests from this origin
   credentials: true, // Allow credentials (e.g., cookies) to be sent in requests
   methods: ['GET', 'POST', 'PUT', 'DELETE'], // Allow these HTTP methods
   headers: ['Content-Type', 'Authorization'] 
@@ -108,66 +108,6 @@ if (process.env.NODE_ENV === 'production') {
  
 }
 
-
-
-
-{/** 
-  app.post('/api/register', (req, res) => {
-    const query = `
-      INSERT INTO registration (
-        companyName, title, firstName, secondName, address1, address2, city, zip, phone, email, password, country
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `;
-  
-    // Extract saltRounds from your environment variables or set it to a default value
-    const saltRounds = parseInt(process.env.SALT_ROUNDS) || 10;
-  
-    bcrypt.hash(req.body.password.toString(), saltRounds, (err, hash) => {
-      if (err) {
-        console.error('Error hashing password:', err);
-        return res.status(500).json({ error: 'Error hashing password' });
-      }
-  
-      // Destructure the request body to get the registration details
-      const {
-        companyName,
-        title,
-        firstName,
-        secondName,
-        address1,
-        address2,
-        city,
-        zip,
-        phone,
-        email,
-        country
-      } = req.body;
-  
-      const values = [
-        companyName,
-        title,
-        firstName,
-        secondName,
-        address1,
-        address2,
-        city,
-        zip,
-        phone,
-        email,
-        hash, // Use the hashed password
-        country
-      ];
-  
-      pool.query(query, values, (err, results) => {
-        if (err) {
-          console.error('Error inserting data into MySQL:', err);
-          return res.status(500).send('Server error');
-        }
-        res.status(200).send('User registered successfully');
-      });
-    });
-  });
-  */}
   app.post('/api/register', (req, res) => {
     const query = `
       INSERT INTO registration (
@@ -215,6 +155,8 @@ if (process.env.NODE_ENV === 'production') {
     });
   });
   
+
+  
   app.post('/login', (req, res) => {
     const sql = "SELECT * FROM registration WHERE email = ? AND password = ?";
      pool.query(sql, [req.body.email, req.body.password])
@@ -223,8 +165,7 @@ if (process.env.NODE_ENV === 'production') {
           return res.json("Login Successfull");
         }
         const user = users[0];
-        req.session.userId = user.id;
-        req.session.userEmail = user.email;
+  
       })
       .catch(err => {
         console.error(err);
@@ -266,11 +207,56 @@ if (process.env.NODE_ENV === 'production') {
   
       console.log(`Fetched ${products.length} products`);
       res.json(products);
+     
     } catch (error) {
       console.error('Error fetching products:', error);
       res.status(500).json({ error: 'Internal server error' });
     }
   });
+
+
+  app.get('/api/user', async (req, res) => {
+    const userEmail = req.query.email;
+  
+    if (!userEmail) {
+      console.error('No user email provided');
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+  
+    try {
+      const query = `
+        SELECT email, companyName, title, firstName, secondName, address1, address2, city, zip, phone, country
+        FROM registration
+        WHERE email = ?
+      `;
+      const [userResults] = await pool.query(query, [userEmail]);
+  
+      if (userResults.length === 0) {
+        console.error(`User not found with email: ${userEmail}`);
+        return res.status(404).json({ error: 'User not found' });
+      }
+  
+      const userData = userResults[0];
+      res.json({
+        email: userData.email,
+        companyName: userData.companyName,
+        title: userData.title,
+        firstName: userData.firstName,
+        secondName: userData.secondName,
+        address1: userData.address1,
+        address2: userData.address2,
+        city: userData.city,
+        zip: userData.zip,
+        phone: userData.phone,
+        country: userData.country
+      });
+    } catch (error) {
+      console.error('Error fetching user data:', error);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  });
+  
+  
  
   app.get('/api/products/:category?', async (req, res) => {
     const category = req.params.category;
@@ -459,14 +445,23 @@ app.get('/api/products/range/:category/:min/:max', async (req, res) => {
 
 app.get('/api/products/partnumber/:partnumber', async (req, res) => {
   const { partnumber } = req.params;
+  const userEmail = req.query.email; // Retrieve email from query parameters
 
   try {
+    // Validate userEmail if required
+    if (!userEmail) {
+      return res.status(400).json({ message: 'Email is required' });
+    }
+
+    // Fetch product details along with price for the user's country
     const query = `
-      SELECT p.partnumber, p.Description, p.Price
+      SELECT p.partnumber, p.Description, pp.price AS Price
       FROM fulldata p
-      WHERE p.partnumber = ?
+      JOIN atlascopcoproduct_prices pp ON p.id = pp.product_id
+      JOIN registration r ON pp.country_code = r.country
+      WHERE p.partnumber = ? AND r.email = ?
     `;
-    const [results] = await pool.query(query, [partnumber]);
+    const [results] = await pool.query(query, [partnumber, userEmail]);
 
     if (results.length > 0) {
       res.json(results[0]);
@@ -478,6 +473,7 @@ app.get('/api/products/partnumber/:partnumber', async (req, res) => {
     res.status(500).json({ message: 'Internal Server Error' });
   }
 });
+
 
 
 

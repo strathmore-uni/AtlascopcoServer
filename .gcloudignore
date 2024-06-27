@@ -35,3 +35,13 @@ gcloud app  deploy atlascorpobusiness/appfront.yaml Server/app.yaml
 156.0.233.52
 
 gcloud app  deploy atlascorpobusiness/appfront.yaml Server/app.yaml
+
+  const user = users[0];
+        const token = jwt.sign(
+          { userId: user.id, email: user.email },
+          process.env.SECRET_KEY,
+          { expiresIn: '1h' }
+        );
+        
+        res.json({ message: 'Login successful', token }); // Send response with token
+        console.log(`Token: ${token}`); // Log the token
