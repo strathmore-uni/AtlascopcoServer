@@ -20,12 +20,12 @@ app.use(bodyParser.urlencoded({ extended: true }));
 
 app.use(express.json());
 app.use(cors());
-app.use(cors({
-  origin: '*', // Allow requests from this origin
-  credentials: true, // Allow credentials (e.g., cookies) to be sent in requests
-  methods: ['GET', 'POST', 'PUT', 'DELETE'], // Allow these HTTP methods
-  headers: ['Content-Type', 'Authorization'] 
-}));
+app.use(function(req, res, next) {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  next();
+});
 
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
