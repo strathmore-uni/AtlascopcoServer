@@ -7,8 +7,7 @@ const path = require('path')
 const https = require('https');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
-const bodyParser = require('body-parser');
-const session = require('express-session');
+
 
 
 require('dotenv').config();
