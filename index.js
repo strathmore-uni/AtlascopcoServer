@@ -10,6 +10,7 @@ const jwt = require('jsonwebtoken');
 const bodyParser = require('body-parser');
 const session = require('express-session');
 
+
 require('dotenv').config();
 const { OAuth2Client } = require('google-auth-library');
 const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
@@ -25,20 +26,15 @@ app.use(function(req, res, next) {
 
 
 
-let ssl;
-try {   
-  ssl = {
-    ca: fs.readFileSync(path.join(__dirname,'cert2','server-ca.pem' )),
-    key: fs.readFileSync(path.join(__dirname,'cert2','client-key.pem' )),
-    cert: fs.readFileSync(path.join(__dirname,'cert2','client-cert.pem' ))
-  };
-  
-} catch (error) {
-  console.error('Error loading SSL certificates:', error);
-}
+const sslOptions = {
+  key: fs.readFileSync(path.join(__dirname, 'cert', 'client-key.pem')),
+  cert: fs.readFileSync(path.join(__dirname, 'cert', 'client-cert.pem')),
+  ca: fs.readFileSync(path.join(__dirname, 'cert', 'server-ca.pem')),
+};
 salt=10;
 
 let pool;
+
 try {
   pool = mysql.createPool({
     host: process.env.INSTANCE_HOST,
@@ -46,15 +42,17 @@ try {
     password: process.env.DB_PASSWORD,
     database: process.env.DATABASE,
     port: process.env.DB_PORT,
-    ssl: ssl,
+    ssl: sslOptions,
     waitForConnections: true,
     connectionLimit: 10,
     connectTimeout: 20000,
     queueLimit: 0,
   });
+  
  
 } catch (error) {
   console.error('Error creating database connection pool:', error);
+  process.exit(1); // Exit the process or handle the error as appropriate
 }
 
 
@@ -67,7 +65,11 @@ socketPath: process.env.DB_SOCKET_PATH,
 app.get('/', (req, res) => {
   res.send('Hello World!');
 });
-const httpsServer = https.createServer(ssl, app);
+const httpsServer = https.createServer({
+  ...sslOptions,
+  // Set the hostname to your domain name (e.g., example.com)
+  servername: 'https://localhost:3001',
+}, app);
 
 if (process.env.NODE_ENV === 'production') {
   pool.socketPath = process.env.DB_SOCKET_PATH;
@@ -520,7 +522,20 @@ const port = process.env.PORT || 3001;
 httpsServer.listen(port, () => {
   console.log(`Server running on port ${port}`);
 });
+require("greenlock-express")
+    .init({
+        packageRoot: __dirname,
+        configDir: "./greenlock.d",
 
+        // contact for security and critical bug notices
+        maintainerEmail: "mikekariuki10028@gmail.com",
+
+        // whether or not to run at cloudscale
+        cluster: false
+    })
+    // Serves on 80 and 443
+    // Get's SSL certificates magically!
+    .serve(app);
 app.get('/api/test-connection', async (req, res) => {
   try {
     const [results] = await pool.query('SELECT 1 + 1 AS solution');

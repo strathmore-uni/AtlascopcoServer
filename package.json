@@ -4,13 +4,12 @@
   "main": "node index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "node index.js",
+    "start": "HTTPS=true SSL_CRT_FILE=./ssl/localhost.pem  SSL_KEY_FILE=./ssl/localhost-key.pem  node index.js",
     "dev": "nodemon index.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "description": "",
   "dependencies": {
     "bcrypt": "^5.1.1",
     "body-parser": "^1.20.2",
@@ -21,6 +20,8 @@
     "express-session": "^1.18.0",
     "fs": "^0.0.1-security",
     "google-auth-library": "^9.11.0",
+    "greenlock-express": "^4.0.3",
+    "https": "^1.0.0",
     "jsonwebtoken": "^9.0.2",
     "jwt-simple": "^0.5.6",
     "lru-cache": "^10.2.2",
@@ -34,5 +35,6 @@
     "@babel/plugin-proposal-private-property-in-object": "^7.21.11",
     "@babel/preset-env": "^7.24.7",
     "nodemon": "^3.1.4"
-  }
+  },
+  "description": ""
 }
