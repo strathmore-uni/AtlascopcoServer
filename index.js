@@ -14,12 +14,8 @@ require('dotenv').config();
 const { OAuth2Client } = require('google-auth-library');
 const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
+// Middleware setup
 app.use(express.json());
-app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: true }));
-
-app.use(express.json());
-app.use(cors());
 app.use(function(req, res, next) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE');
@@ -27,24 +23,14 @@ app.use(function(req, res, next) {
   next();
 });
 
-app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: true }));
 
 
-app.use(session({
-  secret: 'your_secret_key',
-  resave: false,
-  saveUninitialized: true,
-  cookie: { secure: true } // Set to true if using HTTPS
-}));
-
-// Try to read SSL certificates with error handling
 let ssl;
 try {   
   ssl = {
-    ca: fs.readFileSync(path.join(__dirname,'cert','server-ca.pem' )),
-    key: fs.readFileSync(path.join(__dirname,'cert','client-key.pem' )),
-    cert: fs.readFileSync(path.join(__dirname,'cert','client-cert.pem' ))
+    ca: fs.readFileSync(path.join(__dirname,'cert2','server-ca.pem' )),
+    key: fs.readFileSync(path.join(__dirname,'cert2','client-key.pem' )),
+    cert: fs.readFileSync(path.join(__dirname,'cert2','client-cert.pem' ))
   };
   
 } catch (error) {
@@ -71,24 +57,6 @@ try {
   console.error('Error creating database connection pool:', error);
 }
 
-const verifyToken = (req, res, next) => {
-  const token = req.headers.authorization;
-
-  if (!token) {
-    return res.status(401).json({ error: 'Unauthorized: No token provided' });
-  }
-
-  jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
-    if (err) {
-      console.error('Error verifying token:', err);
-      return res.status(401).json({ error: 'Unauthorized: Invalid token' });
-    }
-    
-    // Token is valid, set decoded user information on request object
-    req.user = decoded;
-    next();
-  });
-};
 
 {/** 
 const path = require('path');
@@ -255,6 +223,39 @@ if (process.env.NODE_ENV === 'production') {
       res.status(500).json({ error: 'Internal server error' });
     }
   });
+
+  app.put('/api/user/update', async (req, res) => {
+    const { email, companyName, title, firstName, secondName, address1, address2, city, zip, phone, country } = req.body;
+  
+    // Validate input
+    if (!email) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+  
+    try {
+      // SQL query to update user details
+      const query = `
+        UPDATE registration
+        SET companyName = ?, title = ?, firstName = ?, secondName = ?, address1 = ?,
+            address2 = ?, city = ?, zip = ?, phone = ?, country = ?
+        WHERE email = ?
+      `;
+      const values = [companyName, title, firstName, secondName, address1, address2, city, zip, phone, country, email];
+  
+      // Execute the query
+      const [result] = await pool.query(query, values);
+  
+      // Check if update was successful
+      if (result.affectedRows > 0) {
+        res.json({ message: 'User details updated successfully' });
+      } else {
+        res.status(404).json({ error: 'User not found' });
+      }
+    } catch (error) {
+      console.error('Error updating user data:', error);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  });
   
   
  
@@ -369,6 +370,44 @@ app.get('/api/orders', async (req, res) => {
     res.status(500).send('Error fetching orders');
   }
 });
+app.get('/api/orders/history', async (req, res) => {
+  const userEmail = req.query.email;
+
+  if (!userEmail) {
+    return res.status(400).json({ error: 'Email parameter is required' });
+  }
+
+  try {
+    // Fetch orders and their items from database based on userEmail
+    const [orders] = await pool.query(
+      `SELECT placing_orders.*, GROUP_CONCAT(JSON_OBJECT('description', oi.description, 'quantity', oi.quantity, 'price', oi.price)) as items
+       FROM placing_orders
+       LEFT JOIN order_items oi ON placing_orders.id = oi.order_id
+       WHERE placing_orders.email = ?
+       GROUP BY placing_orders.id`,
+      [userEmail]
+    );
+
+    // If no orders found, return an empty array
+    if (orders.length === 0) {
+      return res.status(404).json({ message: 'No orders found for this email' });
+    }
+
+    // Parse items JSON and format response
+    const formattedOrders = orders.map(order => ({
+      ...order,
+      items: order.items ? JSON.parse(`[${order.items}]`) : []
+    }));
+
+    // Respond with the fetched orders
+    res.status(200).json(formattedOrders);
+  } catch (error) {
+    console.error('Error fetching orders:', error);
+    res.status(500).json({ error: 'Error fetching orders' });
+  }
+});
+
+
 
 app.get('/api/search', async (req, res) => {
   const searchTerm = req.query.term || '';
