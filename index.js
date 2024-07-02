@@ -42,7 +42,7 @@ try {
     database: process.env.DATABASE,
     port: process.env.DB_PORT,
     ssl: sslOptions,
-    socketPath: process.env.DB_SOCKET_PATH,
+    
     waitForConnections: true,
     connectionLimit: 10,
     connectTimeout: 20000,
