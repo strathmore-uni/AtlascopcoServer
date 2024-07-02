@@ -42,6 +42,7 @@ try {
     database: process.env.DATABASE,
     port: process.env.DB_PORT,
     ssl: sslOptions,
+    socketPath: process.env.DB_SOCKET_PATH,
     waitForConnections: true,
     connectionLimit: 10,
     connectTimeout: 20000,
@@ -521,20 +522,7 @@ const port = process.env.PORT || 3001;
 httpsServer.listen(port, () => {
   console.log(`Server running on port ${port}`);
 });
-require("greenlock-express")
-    .init({
-        packageRoot: __dirname,
-        configDir: "./greenlock.d",
 
-        // contact for security and critical bug notices
-        maintainerEmail: "mikekariuki10028@gmail.com",
-
-        // whether or not to run at cloudscale
-        cluster: false
-    })
-    // Serves on 80 and 443
-    // Get's SSL certificates magically!
-    .serve(app);
 app.get('/api/test-connection', async (req, res) => {
   try {
     const [results] = await pool.query('SELECT 1 + 1 AS solution');
@@ -544,3 +532,4 @@ app.get('/api/test-connection', async (req, res) => {
     res.status(500).send(err);
   }
 });
+
