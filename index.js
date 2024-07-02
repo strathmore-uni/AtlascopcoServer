@@ -7,7 +7,7 @@ const path = require('path')
 const https = require('https');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
-
+const nodemailer = require('nodemailer');
 
 
 require('dotenv').config();
@@ -23,7 +23,15 @@ app.use(function(req, res, next) {
   next();
 });
 
+let userDatabase = {}; // Example in-memory user database
 
+const transporter = nodemailer.createTransport({
+  service: 'gmail',
+  auth: {
+    user: 'mikekariuki10028@gmail.com',
+    pass: '10028mike.'
+  }
+});
 
 const sslOptions = {
   key: fs.readFileSync(path.join(__dirname, 'cert', 'client-key.pem')),
@@ -77,6 +85,39 @@ if (process.env.NODE_ENV === 'production') {
   pool.host = process.env.INSTANCE_HOST;
  
 }
+
+app.post('/api/reset-password', (req, res) => {
+  const { email, newPassword } = req.body;
+
+  // Validate input
+  if (!email || !newPassword) {
+    return res.status(400).json({ error: 'Email and newPassword are required' });
+  }
+
+  const query = `
+    UPDATE registration
+    SET password = ?
+    WHERE email = ?
+  `;
+
+  pool.query(query, [newPassword, email], (err, results) => {
+    if (err) {
+      console.error('Error updating password in MySQL:', err);
+      return res.status(500).json({ error: 'Server error' });
+    }
+
+    if (results.affectedRows === 0) {
+      return res.status(404).json({ error: 'Email not found' });
+    }
+
+    res.status(200).json({ message: 'Password reset successfully' });
+  });
+});
+
+
+
+
+
 
   app.post('/api/register', (req, res) => {
     const query = `
