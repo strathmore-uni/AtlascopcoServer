@@ -114,34 +114,43 @@ app.post('/api/reset-password', (req, res) => {
   });
 });
 
+app.post('/api/register', (req, res) => {
+  const {
+    companyName,
+    title,
+    firstName,
+    secondName,
+    address1,
+    address2,
+    city,
+    zip,
+    phone,
+    email,
+    password, // Assuming password is already hashed before sending
+    country
+  } = req.body;
 
+  // First, check if the email already exists
+  const emailQuery = 'SELECT * FROM registration WHERE email =?';
+  const emailValues = [email];
 
+  pool.query(emailQuery, emailValues, (err, results) => {
+    if (err) {
+      console.error('Error checking email existence:', err);
+      return res.status(500).send('Server error');
+    }
 
+    const count = results[0].count;
+    if (count > 0) {
+      return res.status(400).send('Email already exists');
+    }
 
-
-  app.post('/api/register', (req, res) => {
+    // If email doesn't exist, proceed with registration
     const query = `
       INSERT INTO registration (
         companyName, title, firstName, secondName, address1, address2, city, zip, phone, email, password, country
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
     `;
-  
-    // Destructure the request body to get the registration details
-    const {
-      companyName,
-      title,
-      firstName,
-      secondName,
-      address1,
-      address2,
-      city,
-      zip,
-      phone,
-      email,
-      password, // Assuming password is already hashed before sending
-      country
-    } = req.body;
-  
     const values = [
       companyName,
       title,
@@ -156,7 +165,7 @@ app.post('/api/reset-password', (req, res) => {
       password, // Use the pre-hashed password
       country
     ];
-  
+
     pool.query(query, values, (err, results) => {
       if (err) {
         console.error('Error inserting data into MySQL:', err);
@@ -165,10 +174,8 @@ app.post('/api/reset-password', (req, res) => {
       res.status(200).send('User registered successfully');
     });
   });
-  
-
-  
-  app.post('/login', (req, res) => {
+});
+app.post('/login', (req, res) => {
     const sql = "SELECT * FROM registration WHERE email = ? AND password = ?";
      pool.query(sql, [req.body.email, req.body.password])
       .then(([users]) => {
@@ -185,7 +192,7 @@ app.post('/api/reset-password', (req, res) => {
   });
   
 
-  app.get('/api/myproducts', async (req, res) => {
+app.get('/api/myproducts', async (req, res) => {
     const userEmail = req.query.email;
   
     if (!userEmail) {
@@ -225,8 +232,7 @@ app.post('/api/reset-password', (req, res) => {
     }
   });
 
-
-  app.get('/api/user', async (req, res) => {
+app.get('/api/user', async (req, res) => {
     const userEmail = req.query.email;
   
     if (!userEmail) {
