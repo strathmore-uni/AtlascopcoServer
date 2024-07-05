@@ -201,7 +201,7 @@ app.get('/api/myproducts', async (req, res) => {
     }
   
     try {
-      // Fetch the country code based on user's email from the registration table
+     
       const countryCodeQuery = 'SELECT country FROM registration WHERE email =?';
       const [countryCodeResult] = await pool.query(countryCodeQuery, [userEmail]);
   
@@ -213,9 +213,9 @@ app.get('/api/myproducts', async (req, res) => {
       const userCountryCode = countryCodeResult[0].country;
       console.log(`User country code: ${userCountryCode}`);
   
-      // Query to fetch products with prices based on user's country code
+     
       const productsQuery = `
-        SELECT p.id, p.partnumber, p.Description, pp.price AS Price, s.quantity
+        SELECT p.id, p.partnumber, p.Description, p.image,p.thumb1,p.thumb2, pp.price AS Price, s.quantity
         FROM fulldata p
         JOIN stock s ON p.id = s.product_id
         JOIN atlascopcoproduct_prices pp ON p.id = pp.product_id
@@ -276,13 +276,13 @@ app.get('/api/user', async (req, res) => {
   app.put('/api/user/update', async (req, res) => {
     const { email, companyName, title, firstName, secondName, address1, address2, city, zip, phone, country } = req.body;
   
-    // Validate input
+   
     if (!email) {
       return res.status(400).json({ error: 'Email is required' });
     }
   
     try {
-      // SQL query to update user details
+      
       const query = `
         UPDATE registration
         SET companyName = ?, title = ?, firstName = ?, secondName = ?, address1 = ?,
@@ -291,10 +291,10 @@ app.get('/api/user', async (req, res) => {
       `;
       const values = [companyName, title, firstName, secondName, address1, address2, city, zip, phone, country, email];
   
-      // Execute the query
+      
       const [result] = await pool.query(query, values);
   
-      // Check if update was successful
+      
       if (result.affectedRows > 0) {
         res.json({ message: 'User details updated successfully' });
       } else {
@@ -318,7 +318,7 @@ app.get('/api/user', async (req, res) => {
     }
   
     try {
-      // Fetch the country code based on user's email from the registration table
+      
       const countryCodeQuery = 'SELECT country FROM registration WHERE email =?';
       const [countryCodeResult] = await pool.query(countryCodeQuery, [userEmail]);
   
@@ -335,7 +335,7 @@ app.get('/api/user', async (req, res) => {
   
       if (category) {
         query = `
-          SELECT p.id, p.partnumber, p.Description, pp.price AS Price, s.quantity
+          SELECT p.id, p.partnumber, p.Description, p.image,p.thumb1,p.thumb2, pp.price AS Price, s.quantity
           FROM fulldata p
           JOIN stock s ON p.id = s.product_id
           JOIN atlascopcoproduct_prices pp ON p.id = pp.product_id
@@ -344,7 +344,7 @@ app.get('/api/user', async (req, res) => {
         queryParams = [category, category, userCountryCode];
       } else {
         query = `
-          SELECT p.id, p.partnumber, p.Description, pp.price AS Price, s.quantity
+          SELECT p.id, p.partnumber, p.Description, p.image,p.thumb1,p.thumb2, pp.price AS Price, s.quantity
           FROM fulldata p
           JOIN stock s ON p.id = s.product_id
           JOIN atlascopcoproduct_prices pp ON p.id = pp.product_id
@@ -482,7 +482,7 @@ app.get('/api/search', async (req, res) => {
     console.log(`User country code: ${userCountryCode}`);
 
     let query = `
-      SELECT p.id, p.partnumber, p.Description, pp.price AS Price, s.quantity, p.subCategory AS category
+      SELECT p.id, p.partnumber, p.Description, p.image,p.thumb1,p.thumb2, pp.price AS Price, s.quantity, p.subCategory AS category
       FROM fulldata p
       JOIN stock s ON p.id = s.product_id
       JOIN atlascopcoproduct_prices pp ON p.id = pp.product_id
@@ -543,7 +543,7 @@ app.get('/api/products/partnumber/:partnumber', async (req, res) => {
 
     // Fetch product details along with price for the user's country
     const query = `
-      SELECT p.partnumber, p.Description, pp.price AS Price
+      SELECT p.partnumber, p.Description,p.image, pp.price AS Price
       FROM fulldata p
       JOIN atlascopcoproduct_prices pp ON p.id = pp.product_id
       JOIN registration r ON pp.country_code = r.country
