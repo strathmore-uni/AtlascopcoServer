@@ -130,49 +130,32 @@ app.post('/api/register', (req, res) => {
     country
   } = req.body;
 
-  // First, check if the email already exists
-  const emailQuery = 'SELECT * FROM registration WHERE email =?';
-  const emailValues = [email];
+  const query = `
+    INSERT INTO registration (
+      companyName, title, firstName, secondName, address1, address2, city, zip, phone, email, password, country
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+  `;
+  const values = [
+    companyName,
+    title,
+    firstName,
+    secondName,
+    address1,
+    address2,
+    city,
+    zip,
+    phone,
+    email,
+    password, // Use the pre-hashed password
+    country
+  ];
 
-  pool.query(emailQuery, emailValues, (err, results) => {
+  pool.query(query, values, (err, results) => {
     if (err) {
-      console.error('Error checking email existence:', err);
+      console.error('Error inserting data into MySQL:', err);
       return res.status(500).send('Server error');
     }
-
-    const count = results[0].count;
-    if (count > 0) {
-      return res.status(400).send('Email already exists');
-    }
-
-    // If email doesn't exist, proceed with registration
-    const query = `
-      INSERT INTO registration (
-        companyName, title, firstName, secondName, address1, address2, city, zip, phone, email, password, country
-      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-    `;
-    const values = [
-      companyName,
-      title,
-      firstName,
-      secondName,
-      address1,
-      address2,
-      city,
-      zip,
-      phone,
-      email,
-      password, // Use the pre-hashed password
-      country
-    ];
-
-    pool.query(query, values, (err, results) => {
-      if (err) {
-        console.error('Error inserting data into MySQL:', err);
-        return res.status(500).send('Server error');
-      }
-      res.status(200).send('User registered successfully');
-    });
+    res.status(200).send('User registered successfully');
   });
 });
 app.post('/login', (req, res) => {
