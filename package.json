@@ -18,6 +18,7 @@
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "express-session": "^1.18.0",
+    "form-data": "^4.0.0",
     "fs": "^0.0.1-security",
     "google-auth-library": "^9.11.0",
     "greenlock-express": "^4.0.3",
@@ -25,6 +26,8 @@
     "jsonwebtoken": "^9.0.2",
     "jwt-simple": "^0.5.6",
     "lru-cache": "^10.2.2",
+    "mailgun-js": "^0.22.0",
+    "mailgun.js": "^10.2.1",
     "multer": "^1.4.5-lts.1",
     "mysql2": "^3.10.1",
     "nodemailer": "^6.9.14"

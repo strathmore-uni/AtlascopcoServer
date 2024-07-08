@@ -8,8 +8,8 @@ const https = require('https');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const nodemailer = require('nodemailer');
-
-
+const mailgun =require('mailgun-js')
+const sendEmail = require('./sendEmail');
 require('dotenv').config();
 const { OAuth2Client } = require('google-auth-library');
 const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
@@ -21,16 +21,6 @@ app.use(function(req, res, next) {
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   next();
-});
-
-let userDatabase = {}; // Example in-memory user database
-
-const transporter = nodemailer.createTransport({
-  service: 'gmail',
-  auth: {
-    user: 'mikekariuki10028@gmail.com',
-    pass: '10028mike.'
-  }
 });
 
 const sslOptions = {
@@ -114,6 +104,7 @@ app.post('/api/reset-password', (req, res) => {
   });
 });
 
+
 app.post('/api/register', (req, res) => {
   const {
     companyName,
@@ -126,7 +117,7 @@ app.post('/api/register', (req, res) => {
     zip,
     phone,
     email,
-    password, // Assuming password is already hashed before sending
+    password,
     country
   } = req.body;
 
@@ -146,18 +137,31 @@ app.post('/api/register', (req, res) => {
     zip,
     phone,
     email,
-    password, // Use the pre-hashed password
+    password,
     country
   ];
 
-  pool.query(query, values, (err, results) => {
+  pool.query(query, values, async (err, results) => {
     if (err) {
       console.error('Error inserting data into MySQL:', err);
       return res.status(500).send('Server error');
     }
-    res.status(200).send('User registered successfully');
+
+    try {
+      const subject = 'Welcome to Our Service';
+      const text = 'Hello, welcome to our service!';
+      const html = '<h1>Hello, welcome to our service!</h1>';
+
+      await sendEmail(email, subject, text, html);
+      res.status(200).send('User registered successfully and email sent.');
+    } catch (emailError) {
+      console.error('Error sending email:', emailError);
+      res.status(500).send('User registered but failed to send email.');
+    }
   });
 });
+
+
 app.post('/login', (req, res) => {
     const sql = "SELECT * FROM registration WHERE email = ? AND password = ?";
      pool.query(sql, [req.body.email, req.body.password])
