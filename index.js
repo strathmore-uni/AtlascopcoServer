@@ -147,19 +147,37 @@ app.post('/api/register', (req, res) => {
       return res.status(500).send('Server error');
     }
 
-    try {
-      const subject = 'Welcome to Our Service';
-      const text = 'Hello, welcome to our service!';
-      const html = '<h1>Hello, welcome to our service!</h1>';
+    const verificationToken = jwt.sign({ email }, process.env.JWT_SECRET, { expiresIn: '1h' });
 
-      await sendEmail(email, subject, text, html);
-      res.status(200).send('User registered successfully and email sent.');
-    } catch (emailError) {
-      console.error('Error sending email:', emailError);
-      res.status(500).send('User registered but failed to send email.');
-    }
+   
+    await sendVerificationEmail(email, firstName, verificationToken);
   });
 });
+
+app.get('/verify-email', (req, res) => {
+  const email = req.query.email;
+
+  if (!email) {
+    return res.status(400).json({ message: 'Email is required' });
+  }
+
+  const query = 'UPDATE registration SET is_verified = 1 WHERE email = ?';
+
+  pool.query(query, [email], (err, result) => {
+    if (err) {
+      console.error('Error updating email verification:', err);
+      return res.status(500).json({ message: 'Internal server error' });
+    }
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: 'Email not found' });
+    }
+
+    return res.status(200).json({ message: 'Email verified successfully' });
+  });
+});
+
+
 
 
 app.post('/login', (req, res) => {
