@@ -10,6 +10,7 @@ const jwt = require('jsonwebtoken');
 const nodemailer = require('nodemailer');
 const mailgun =require('mailgun-js')
 const sendEmail = require('./sendEmail');
+const Joi = require('joi');
 require('dotenv').config();
 const { OAuth2Client } = require('google-auth-library');
 const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
@@ -76,36 +77,32 @@ if (process.env.NODE_ENV === 'production') {
  
 }
 
-app.post('/api/reset-password', (req, res) => {
-  const { email, newPassword } = req.body;
-
-  // Validate input
-  if (!email || !newPassword) {
-    return res.status(400).json({ error: 'Email and newPassword are required' });
-  }
-
-  const query = `
-    UPDATE registration
-    SET password = ?
-    WHERE email = ?
-  `;
-
-  pool.query(query, [newPassword, email], (err, results) => {
-    if (err) {
-      console.error('Error updating password in MySQL:', err);
-      return res.status(500).json({ error: 'Server error' });
-    }
-
-    if (results.affectedRows === 0) {
-      return res.status(404).json({ error: 'Email not found' });
-    }
-
-    res.status(200).json({ message: 'Password reset successfully' });
+const validateInput = (req, res, next) => {
+  const schema = Joi.object({
+    companyName: Joi.string().required(),
+    title: Joi.string().required(),
+    firstName: Joi.string().required(),
+    secondName: Joi.string().required(),
+    address1: Joi.string().required(),
+    address2: Joi.string().optional(),
+    city: Joi.string().required(),
+    zip: Joi.string().required(),
+    phone: Joi.string().required(),
+    email: Joi.string().email().required(),
+    password: Joi.string().required(),
+    confpassword: Joi.string().valid(Joi.ref('password')).required(), // Added for validation
+    country: Joi.string().required(),
   });
-});
 
+  const { error } = schema.validate(req.body);
+  if (error) {
+    console.error('Validation error:', error.details);
+    return res.status(400).json({ error: error.details });
+  }
+  next();
+};
 
-app.post('/api/register', (req, res) => {
+app.post('/api/register', validateInput, async (req, res) => {
   const {
     companyName,
     title,
@@ -121,38 +118,49 @@ app.post('/api/register', (req, res) => {
     country
   } = req.body;
 
-  const query = `
-    INSERT INTO registration (
-      companyName, title, firstName, secondName, address1, address2, city, zip, phone, email, password, country
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-  `;
-  const values = [
-    companyName,
-    title,
-    firstName,
-    secondName,
-    address1,
-    address2,
-    city,
-    zip,
-    phone,
-    email,
-    password,
-    country
-  ];
+  const normalizedEmail = email.toLowerCase(); // Normalize the email address to lowercase
 
-  pool.query(query, values, async (err, results) => {
-    if (err) {
-      console.error('Error inserting data into MySQL:', err);
-      return res.status(500).send('Server error');
+  try {
+    const checkEmailQuery = 'SELECT email FROM registration WHERE LOWER(email) = LOWER(?)';
+    const [result] = await pool.query(checkEmailQuery, [normalizedEmail]);
+
+    if (result.length > 0) {
+      console.error('Email already exists:', normalizedEmail);
+      return res.status(400).json({ error: 'Email already exists' });
     }
 
-    const verificationToken = jwt.sign({ email }, process.env.JWT_SECRET, { expiresIn: '1h' });
+    const insertQuery = `
+      INSERT INTO registration (
+        companyName, title, firstName, secondName, address1, address2, city, zip, phone, email, password, country
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+    `;
+    const values = [
+      companyName,
+      title,
+      firstName,
+      secondName,
+      address1,
+      address2,
+      city,
+      zip,
+      phone,
+      normalizedEmail,
+      password,
+      country
+    ];
+
+    await pool.query(insertQuery, values);
 
    
-    await sendVerificationEmail(email, firstName, verificationToken);
-  });
+  } catch (err) {
+    console.error('Server error:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
 });
+
+//const verificationToken = jwt.sign({ email }, process.env.JWT_SECRET, { expiresIn: '1h' });
+
+//await sendVerificationEmail(email, firstName, verificationToken);
 
 app.get('/verify-email', (req, res) => {
   const email = req.query.email;
