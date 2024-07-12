@@ -1,5 +1,6 @@
 runtime: nodejs20
-service: atlascopcoserverv2
+service: atlascopcoserverv4
+
 
 env_variables:
   DB_SOCKET_PATH: "/cloudsql/ultra-mediator-423907-a4:us-central1:atlascopco"
