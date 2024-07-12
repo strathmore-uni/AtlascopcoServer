@@ -14,12 +14,12 @@ const { OAuth2Client } = require('google-auth-library');
 const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 app.use(cors)
 app.use(express.json());
-app.use(function(req, res, next) {
-  res.setHeader('Access-Control-Allow-Origin', 'https://localhost:3000');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  next();
-});
+app.use(cors({
+  origin: 'https://localhost:3000', // Allow requests from this origin
+  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
 
 const sslOptions = {
   key: fs.readFileSync(path.join(__dirname, 'cert', 'client-key.pem')),
