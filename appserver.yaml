@@ -1,5 +1,5 @@
 runtime: nodejs20
-service: atlascopcoserverv4
+service: atlascopcoserver5
 
 
 env_variables:
