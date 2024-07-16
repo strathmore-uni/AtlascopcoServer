@@ -16,7 +16,7 @@ const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 app.use(express.json());
 app.use(function(req, res, next) {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE,PATCH,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   next();
 });
@@ -27,7 +27,7 @@ const sslOptions = {
   ca: fs.readFileSync(path.join(__dirname, 'cert', 'server-ca.pem')),
 };
 salt=10;
-
+const secretKey = 'waweru';
 let pool;
 
 try {
@@ -73,6 +73,68 @@ if (process.env.NODE_ENV === 'production') {
   pool.host = process.env.INSTANCE_HOST;
  
 }
+
+app.post('/api/newproducts', async (req, res) => {
+  const { partnumber, description, image, thumb1, thumb2, prices, stock } = req.body;
+
+  try {
+    const insertProductQuery = 'INSERT INTO fulldata (partnumber, Description, image, thumb1, thumb2) VALUES (?, ?, ?, ?, ?)';
+    const [result] = await pool.query(insertProductQuery, [partnumber, description, image, thumb1, thumb2]);
+    
+    const productId = result.insertId;
+
+    const insertStockQuery = 'INSERT INTO stock (product_id, quantity) VALUES (?, ?)';
+    await pool.query(insertStockQuery, [productId, stock]);
+
+    const insertPricesQuery = 'INSERT INTO atlascopcoproduct_prices (product_id, country_code, price) VALUES ?';
+    const priceValues = prices.map(price => [productId, price.country_code, price.price]);
+    await pool.query(insertPricesQuery, [priceValues]);
+
+    res.status(201).json({ message: 'Product added successfully' });
+
+  } catch (error) {
+    console.error('Error adding product:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+
+// Example backend route setup for fetching a single product by ID
+app.get('/api/viewproducts', async (req, res) => {
+  try {
+    const productsQuery = `
+      SELECT p.id, p.partnumber, p.Description, p.image, p.thumb1, p.thumb2
+      FROM fulldata p
+    `;
+    const [products] = await pool.query(productsQuery);
+    res.json(products);
+  } catch (error) {
+    console.error('Error fetching products:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.put('/api/viewproducts/:id', async (req, res) => {
+  const productId = req.params.id;
+  const { partnumber, description, image, thumb1, thumb2 } = req.body;
+
+  try {
+    const updateProductQuery = `
+      UPDATE fulldata
+      SET partnumber = ?, Description = ?, image = ?, thumb1 = ?, thumb2 = ?
+      WHERE id = ?
+    `;
+    const values = [partnumber, description, image, thumb1, thumb2, productId];
+    await pool.query(updateProductQuery, values);
+
+    res.json({ message: 'Product updated successfully' });
+  } catch (error) {
+    console.error('Error updating product:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+
 
 const validateInput = (req, res, next) => {
   const schema = Joi.object({
@@ -154,10 +216,91 @@ app.post('/api/register', validateInput, async (req, res) => {
     res.status(500).json({ error: 'Server error' });
   }
 });
+app.get('/api/registeredusers', async (req, res) => {
+  try {
+    const getUsersQuery = 'SELECT * FROM registration';
+    const [users] = await pool.query(getUsersQuery);
 
-//const verificationToken = jwt.sign({ email }, process.env.JWT_SECRET, { expiresIn: '1h' });
+    res.json(users);
+  } catch (error) {
+    console.error('Error fetching users:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
 
-//await sendVerificationEmail(email, firstName, verificationToken);
+// Fetch all orders for the admin dashboard
+app.get('/api/admin/orders', async (req, res) => {
+  try {
+    // Fetch orders and their items from database
+    const [orders] = await pool.query(
+      `SELECT placing_orders.*, 
+              GROUP_CONCAT(JSON_OBJECT('description', oi.description, 'quantity', oi.quantity, 'price', oi.price)) as items,
+              placing_orders.status
+       FROM placing_orders
+       LEFT JOIN order_items oi ON placing_orders.id = oi.order_id
+       GROUP BY placing_orders.id`
+    );
+
+    // If no orders found, return an empty array
+    if (orders.length === 0) {
+      return res.status(404).json({ message: 'No orders found' });
+    }
+
+    // Parse items JSON and format response
+    const formattedOrders = orders.map(order => ({
+      ...order,
+      items: order.items ? JSON.parse(`[${order.items}]`) : [],
+      orderNumber: order.ordernumber // Ensure this matches your actual field name
+    }));
+
+    // Respond with the fetched orders
+    res.status(200).json(formattedOrders);
+  } catch (error) {
+    console.error('Error fetching orders:', error);
+    res.status(500).json({ error: 'Error fetching orders' });
+  }
+});
+
+app.get('/api/admin/orders/:orderId', async (req, res) => {
+  try {
+    const orderId = req.params.orderId;
+    const [orders] = await pool.query(
+      `SELECT placing_orders.ordernumber, placing_orders.email, 
+              GROUP_CONCAT(JSON_OBJECT('id', oi.id, 'description', oi.description, 'quantity', oi.quantity, 'price', oi.price)) as items
+       FROM placing_orders
+       LEFT JOIN order_items oi ON placing_orders.id = oi.order_id
+       WHERE placing_orders.id = ?
+       GROUP BY placing_orders.id`, [orderId]
+    );
+
+    if (orders.length === 0) {
+      return res.status(404).json({ message: 'Order not found' });
+    }
+
+    const order = orders[0];
+    order.items = order.items ? JSON.parse(`[${order.items}]`) : [];
+    res.status(200).json(order);
+  } catch (error) {
+    console.error('Error fetching order details:', error);
+    res.status(500).json({ error: 'Error fetching order details' });
+  }
+});
+
+app.patch('/api/admin/orders/:orderId/status', async (req, res) => {
+  const orderId = req.params.orderId;
+  const { status } = req.body;
+
+  try {
+    const [result] = await pool.query('UPDATE placing_orders SET status = ? WHERE id = ?', [status, orderId]);
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: 'Order not found' });
+    }
+    res.status(200).json({ message: 'Order status updated successfully' });
+  } catch (error) {
+    console.error('Error updating order status:', error);
+    res.status(500).json({ error: 'Error updating order status' });
+  }
+});
 
 app.get('/verify-email', (req, res) => {
   const email = req.query.email;
@@ -182,28 +325,25 @@ app.get('/verify-email', (req, res) => {
   });
 });
 
-
-
-
-const secretKey = 'waweru';
-
 app.post('/login', (req, res) => {
-    const sql = "SELECT * FROM registration WHERE email = ? AND password = ?";
-    pool.query(sql, [req.body.email, req.body.password])
-        .then(([users]) => {
-            if (users.length > 0) {
-                const user = users[0];
-                const token = jwt.sign({ email: user.email }, secretKey, { expiresIn: '1h' });
-                return res.json({ message: "Login Successful", token });
-            } else {
-                return res.status(401).json({ message: "Login Failed" });
-            }
-        })
-        .catch(err => {
-            console.error(err);
-            return res.status(500).json({ message: "Internal Server Error" });
-        });
+  const sql = "SELECT * FROM registration WHERE email = ? AND password = ?";
+  pool.query(sql, [req.body.email, req.body.password])
+    .then(([users]) => {
+      if (users.length > 0) {
+        const user = users[0];
+        const isAdmin = user.email === 'admin@gmail.com'; // Replace with your admin's email
+        const token = jwt.sign({ email: user.email, isAdmin: isAdmin }, secretKey, { expiresIn: '1h' });
+        return res.json({ message: "Login Successful", token, isAdmin: isAdmin });
+      } else {
+        return res.status(401).json({ message: "Login Failed" });
+      }
+    })
+    .catch(err => {
+      console.error(err);
+      return res.status(500).json({ message: "Internal Server Error" });
+    });
 });
+
 
 app.post('/verifyToken', (req, res) => {
     const token = req.body.token;
@@ -259,6 +399,7 @@ app.get('/api/myproducts', async (req, res) => {
       res.status(500).json({ error: 'Internal server error' });
     }
   });
+
 
 app.get('/api/user', async (req, res) => {
     const userEmail = req.query.email;
@@ -391,49 +532,50 @@ app.get('/api/user', async (req, res) => {
   
 
  
-app.post('/api/order', async (req, res) => {
-  const { formData, cartItems, orderNumber } = req.body;
-  if (!formData || !cartItems) {
-    return res.status(400).json({ error: 'No form data or cart items provided' });
-  }
-  const connection = await pool.getConnection();
-  try {
-    await connection.beginTransaction();
-    const [orderResult] = await connection.query(
-      `INSERT INTO placing_orders (company_name, title, first_name, second_name, address1, address2, city, zip, phone, email, ordernumber) 
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        formData.companyName,
-        formData.title,
-        formData.firstName,
-        formData.secondName,
-        formData.address1,
-        formData.address2,
-        formData.city,
-        formData.zip,
-        formData.phone,
-        formData.email,
-        orderNumber
-      ]
-    );
-    const orderId = orderResult.insertId;
-    for (const item of cartItems) {
-      await connection.query(
-        `INSERT INTO order_items (order_id, description, quantity, price) 
-         VALUES (?, ?, ?, ?)`,
-        [orderId, item.Description, item.quantity, item.Price]
-      );
+  app.post('/api/order', async (req, res) => {
+    const { formData, cartItems, orderNumber } = req.body;
+    if (!formData || !cartItems || !orderNumber) {
+      return res.status(400).json({ error: 'Missing form data, cart items, or order number' });
     }
-    await connection.commit();
-    res.status(201).json({ message: 'Order placed successfully', orderId });
-  } catch (error) {
-    await connection.rollback();
-    console.error('Error placing order:', error);
-    res.status(500).send(error);
-  } finally {
-    connection.release();
-  }
-});
+    const connection = await pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      const [orderResult] = await connection.query(
+        `INSERT INTO placing_orders (company_name, title, first_name, second_name, address1, address2, city, zip, phone, email, ordernumber, status) 
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending')`,
+        [
+          formData.companyName,
+          formData.title,
+          formData.firstName,
+          formData.secondName,
+          formData.address1,
+          formData.address2,
+          formData.city,
+          formData.zip,
+          formData.phone,
+          formData.email,
+          orderNumber
+        ]
+      );
+      const orderId = orderResult.insertId;
+      for (const item of cartItems) {
+        await connection.query(
+          `INSERT INTO order_items (order_id, description, quantity, price) 
+           VALUES (?, ?, ?, ?)`,
+          [orderId, item.Description, item.quantity, item.Price]
+        );
+      }
+      await connection.commit();
+      res.status(201).json({ message: 'Order placed successfully', orderId });
+    } catch (error) {
+      await connection.rollback();
+      console.error('Error placing order:', error);
+      res.status(500).send(error);
+    } finally {
+      connection.release();
+    }
+  });
+  
 
 app.get('/api/orders', async (req, res) => {
   const userId = req.query.userId;
