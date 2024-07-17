@@ -73,6 +73,62 @@ if (process.env.NODE_ENV === 'production') {
   pool.host = process.env.INSTANCE_HOST;
  
 }
+// Route to count the number of orders
+app.get('/api/admin/orders/count', async (req, res) => {
+  try {
+    const [rows] = await pool.query('SELECT COUNT(*) AS count FROM placing_orders');
+    res.json({ count: rows[0].count });
+  } catch (error) {
+    console.error('Error fetching order count:', error);
+    res.status(500).json({ error: 'Error fetching order count' });
+  }
+});
+
+// Route to count the number of products
+app.get('/api/admin/products/count', async (req, res) => {
+  try {
+    const [rows] = await pool.query('SELECT COUNT(*) AS count FROM fulldata');
+    res.json({ count: rows[0].count });
+  } catch (error) {
+    console.error('Error fetching product count:', error);
+    res.status(500).json({ error: 'Error fetching product count' });
+  }
+});
+
+// Route to count the number of users
+app.get('/api/admin/users/count', async (req, res) => {
+  try {
+    const [rows] = await pool.query('SELECT COUNT(*) AS count FROM registration');
+    res.json({ count: rows[0].count });
+  } catch (error) {
+    console.error('Error fetching user count:', error);
+    res.status(500).json({ error: 'Error fetching user count' });
+  }
+});
+app.get('/api/admin/orders/recent', async (req, res) => {
+  try {
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+
+    const recentOrders = await pool.query(
+      `SELECT po.ordernumber, po.created_at, po.status, r.email
+       FROM placing_orders po
+       LEFT JOIN registration r ON po.email = r.email
+       WHERE po.created_at >= ?`,
+      [sevenDaysAgo]
+    );
+
+    res.json(recentOrders[0]); // Assuming recentOrders is an array with first element as result
+
+  } catch (error) {
+    console.error('Error fetching recent orders:', error);
+    res.status(500).json({ error: 'Failed to fetch recent orders' });
+  }
+});
+
+
+
+
 
 app.post('/api/newproducts', async (req, res) => {
   const { partnumber, description, image, thumb1, thumb2, prices, stock } = req.body;
@@ -114,22 +170,33 @@ app.get('/api/viewproducts', async (req, res) => {
   }
 });
 
-app.put('/api/viewproducts/:id', async (req, res) => {
+// Backend route to fetch a single product by ID
+// Backend route to fetch a single product by ID along with its prices and stock quantities
+app.get('/api/viewproducts/:id', async (req, res) => {
   const productId = req.params.id;
-  const { partnumber, description, image, thumb1, thumb2 } = req.body;
-
   try {
-    const updateProductQuery = `
-      UPDATE fulldata
-      SET partnumber = ?, Description = ?, image = ?, thumb1 = ?, thumb2 = ?
-      WHERE id = ?
+    const productQuery = `
+      SELECT p.id, p.partnumber, p.Description, p.image, p.thumb1, p.thumb2
+      FROM fulldata p
+      WHERE p.id = ?
     `;
-    const values = [partnumber, description, image, thumb1, thumb2, productId];
-    await pool.query(updateProductQuery, values);
+    const [product] = await pool.query(productQuery, [productId]);
 
-    res.json({ message: 'Product updated successfully' });
+    const pricesQuery = `
+      SELECT pp.country_code, pp.price AS Price, s.quantity AS stock_quantity
+      FROM atlascopcoproduct_prices pp
+      JOIN stock s ON pp.product_id = s.product_id
+      WHERE pp.product_id = ?
+    `;
+    const [prices] = await pool.query(pricesQuery, [productId]);
+
+    if (product.length > 0) {
+      res.json({ ...product[0], prices });
+    } else {
+      res.status(404).json({ error: 'Product not found' });
+    }
   } catch (error) {
-    console.error('Error updating product:', error);
+    console.error('Error fetching product:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -301,6 +368,21 @@ app.patch('/api/admin/orders/:orderId/status', async (req, res) => {
     res.status(500).json({ error: 'Error updating order status' });
   }
 });
+app.get('/api/admin/orders/pending', async (req, res) => {
+  try {
+    const [orders] = await pool.query(
+      `SELECT placing_orders.id, placing_orders.ordernumber, placing_orders.email 
+       FROM placing_orders
+       WHERE placing_orders.status = 'pending'`
+    );
+
+    res.status(200).json(orders);
+  } catch (error) {
+    console.error('Error fetching pending orders:', error);
+    res.status(500).json({ error: 'Error fetching pending orders' });
+  }
+});
+
 
 app.get('/verify-email', (req, res) => {
   const email = req.query.email;
@@ -533,16 +615,17 @@ app.get('/api/user', async (req, res) => {
 
  
   app.post('/api/order', async (req, res) => {
-    const { formData, cartItems, orderNumber } = req.body;
-    if (!formData || !cartItems || !orderNumber) {
-      return res.status(400).json({ error: 'Missing form data, cart items, or order number' });
+    const { formData, cartItems, orderNumber, newPrice } = req.body;
+    if (!formData || !cartItems || !orderNumber || !newPrice) {
+      return res.status(400).json({ error: 'Missing form data, cart items, order number, or new price' });
     }
     const connection = await pool.getConnection();
     try {
       await connection.beginTransaction();
       const [orderResult] = await connection.query(
-        `INSERT INTO placing_orders (company_name, title, first_name, second_name, address1, address2, city, zip, phone, email, ordernumber, status) 
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending')`,
+        `INSERT INTO placing_orders 
+         (company_name, title, first_name, second_name, address1, address2, city, zip, phone, email, ordernumber, status, totalprice) 
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending', ?)`,
         [
           formData.companyName,
           formData.title,
@@ -554,7 +637,8 @@ app.get('/api/user', async (req, res) => {
           formData.zip,
           formData.phone,
           formData.email,
-          orderNumber
+          orderNumber,
+          newPrice
         ]
       );
       const orderId = orderResult.insertId;
@@ -575,6 +659,7 @@ app.get('/api/user', async (req, res) => {
       connection.release();
     }
   });
+  
   
 
 app.get('/api/orders', async (req, res) => {
