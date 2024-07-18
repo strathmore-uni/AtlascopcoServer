@@ -125,8 +125,118 @@ app.get('/api/admin/orders/recent', async (req, res) => {
     res.status(500).json({ error: 'Failed to fetch recent orders' });
   }
 });
+app.get('/api/admin/orders/pending', async (req, res) => {
+  try {
+    const [orders] = await pool.query(
+      `SELECT placing_orders.*, 
+              GROUP_CONCAT(JSON_OBJECT('description', oi.description, 'quantity', oi.quantity, 'price', oi.price)) as items
+       FROM placing_orders
+       LEFT JOIN order_items oi ON placing_orders.id = oi.order_id
+       WHERE placing_orders.status = 'Pending'
+       GROUP BY placing_orders.id`
+    );
 
+    if (orders.length === 0) {
+      return res.status(404).json({ message: 'No pending orders found' });
+    }
 
+    const formattedOrders = orders.map(order => ({
+      ...order,
+      items: order.items ? JSON.parse(`[${order.items}]`) : [],
+      ordernumber: order.ordernumber // Ensure this matches your actual field name
+    }));
+
+    res.status(200).json(formattedOrders);
+  } catch (error) {
+    console.error('Error fetching pending orders:', error);
+    res.status(500).json({ error: 'Error fetching pending orders' });
+  }
+});
+app.get('/api/admin/orders/approved', async (req, res) => {
+  try {
+    const [orders] = await pool.query(
+      `SELECT placing_orders.*, 
+              GROUP_CONCAT(JSON_OBJECT('description', oi.description, 'quantity', oi.quantity, 'price', oi.price)) as items
+       FROM placing_orders
+       LEFT JOIN order_items oi ON placing_orders.id = oi.order_id
+       WHERE placing_orders.status = 'Approved'
+       GROUP BY placing_orders.id`
+    );
+
+    if (orders.length === 0) {
+      return res.status(404).json({ message: 'No approved orders found' });
+    }
+
+    const formattedOrders = orders.map(order => ({
+      ...order,
+      items: order.items ? JSON.parse(`[${order.items}]`) : [],
+      ordernumber: order.ordernumber // Ensure this matches your actual field name
+    }));
+
+    res.status(200).json(formattedOrders);
+  } catch (error) {
+    console.error('Error fetching approved orders:', error);
+    res.status(500).json({ error: 'Error fetching approved orders' });
+  }
+});
+app.get('/api/admin/orders/cancelled', async (req, res) => {
+  try {
+    const [orders] = await pool.query(
+      `SELECT placing_orders.*, 
+              GROUP_CONCAT(JSON_OBJECT('description', oi.description, 'quantity', oi.quantity, 'price', oi.price)) as items
+       FROM placing_orders
+       LEFT JOIN order_items oi ON placing_orders.id = oi.order_id
+       WHERE placing_orders.status = 'Cancelled'
+       GROUP BY placing_orders.id`
+    );
+
+    if (orders.length === 0) {
+      return res.status(404).json({ message: 'No cancelled orders found' });
+    }
+
+    const formattedOrders = orders.map(order => ({
+      ...order,
+      items: order.items ? JSON.parse(`[${order.items}]`) : [],
+      ordernumber: order.ordernumber // Ensure this matches your actual field name
+    }));
+
+    res.status(200).json(formattedOrders);
+  } catch (error) {
+    console.error('Error fetching cancelled orders:', error);
+    res.status(500).json({ error: 'Error fetching cancelled orders' });
+  }
+});
+app.get('/api/admin/orders/orders', async (req, res) => {
+  try {
+    // Fetch orders and their items from database
+    const [orders] = await pool.query(
+      `SELECT placing_orders.*, 
+              GROUP_CONCAT(JSON_OBJECT('description', oi.description, 'quantity', oi.quantity, 'price', oi.price)) as items,
+              placing_orders.status
+       FROM placing_orders
+       LEFT JOIN order_items oi ON placing_orders.id = oi.order_id
+       GROUP BY placing_orders.id`
+    );
+
+    // If no orders found, return an empty array
+    if (orders.length === 0) {
+      return res.status(404).json({ message: 'No orders found' });
+    }
+
+    // Parse items JSON and format response
+    const formattedOrders = orders.map(order => ({
+      ...order,
+      items: order.items ? JSON.parse(`[${order.items}]`) : [],
+      orderNumber: order.ordernumber // Ensure this matches your actual field name
+    }));
+
+    // Respond with the fetched orders
+    res.status(200).json(formattedOrders);
+  } catch (error) {
+    console.error('Error fetching orders:', error);
+    res.status(500).json({ error: 'Error fetching orders' });
+  }
+});
 
 
 
@@ -332,7 +442,7 @@ app.get('/api/admin/orders/:orderId', async (req, res) => {
   try {
     const orderId = req.params.orderId;
     const [orders] = await pool.query(
-      `SELECT placing_orders.ordernumber, placing_orders.email, 
+      `SELECT placing_orders.ordernumber, placing_orders.email, placing_orders.totalprice,
               GROUP_CONCAT(JSON_OBJECT('id', oi.id, 'description', oi.description, 'quantity', oi.quantity, 'price', oi.price)) as items
        FROM placing_orders
        LEFT JOIN order_items oi ON placing_orders.id = oi.order_id
@@ -368,21 +478,6 @@ app.patch('/api/admin/orders/:orderId/status', async (req, res) => {
     res.status(500).json({ error: 'Error updating order status' });
   }
 });
-app.get('/api/admin/orders/pending', async (req, res) => {
-  try {
-    const [orders] = await pool.query(
-      `SELECT placing_orders.id, placing_orders.ordernumber, placing_orders.email 
-       FROM placing_orders
-       WHERE placing_orders.status = 'pending'`
-    );
-
-    res.status(200).json(orders);
-  } catch (error) {
-    console.error('Error fetching pending orders:', error);
-    res.status(500).json({ error: 'Error fetching pending orders' });
-  }
-});
-
 
 app.get('/verify-email', (req, res) => {
   const email = req.query.email;
@@ -425,7 +520,6 @@ app.post('/login', (req, res) => {
       return res.status(500).json({ message: "Internal Server Error" });
     });
 });
-
 
 app.post('/verifyToken', (req, res) => {
     const token = req.body.token;
