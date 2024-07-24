@@ -66,38 +66,20 @@ if (process.env.NODE_ENV === "production") {
   pool.host = process.env.INSTANCE_HOST;
 }
 //////////////////////////////////////////users////////////////////////////////////////////
+app.post('/api/cart', async (req, res) => {
+  const { userEmail, partnumber, quantity, description, price } = req.body;
 
-const authenticate = (req, res, next) => {
-  const token = req.headers.authorization?.split(' ')[1];
-  
-  console.log('Received Token:', token); // Debugging line
-  
-  if (!token) {
-    return res.status(401).json({ message: 'Token required' });
+  if (!userEmail) {
+    return res.status(400).json({ error: 'User email is required' });
   }
 
-  jwt.verify(token, secretKey, (err, decoded) => {
-    if (err) {
-      console.log('Token Verification Error:', err); // Debugging line
-      return res.status(401).json({ message: 'Invalid token' });
-    }
-
-    req.user = decoded;
-    next();
-  });
-};
-
-
-module.exports = authenticate;
-
-app.post('/api/cart', authenticate, async (req, res) => {
-  const { user } = req; // Access the user from the request object
-  const { partnumber, quantity } = req.body;
-
   try {
-    const [rows] = await db.query(
-      'INSERT INTO cart (user_id, partnumber, quantity) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE quantity = quantity + VALUES(quantity)',
-      [user.id, partnumber, quantity] // Use user.id from the token payload
+    // Insert or update the cart item
+    const [result] = await pool.query(
+      `INSERT INTO cart (user_email, partnumber, quantity, description, price)
+       VALUES (?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE quantity = quantity + VALUES(quantity), description = VALUES(description), price = VALUES(price)`,
+      [userEmail, partnumber, quantity, description, price]
     );
     res.json({ message: 'Item added to cart' });
   } catch (error) {
@@ -106,39 +88,93 @@ app.post('/api/cart', authenticate, async (req, res) => {
   }
 });
 
-// Remove item from cart
-app.delete('/api/cart/:partnumber', authenticate, async (req, res) => {
-  const { userId } = req.user;
-  const { partnumber } = req.params;
+
+
+app.get('/api/cart', async (req, res) => {
+  const userEmail = req.query.email; // Get email from query parameter
+
+  if (!userEmail) {
+    return res.status(400).json({ error: 'Email parameter is required' });
+  }
 
   try {
-    const [rows] = await db.query(
-      'DELETE FROM cart WHERE user_id = ? AND partnumber = ?',
-      [userId, partnumber]
+    // Query the cart items for the given email
+    const [rows] = await pool.query(
+      `SELECT * FROM cart WHERE user_email = ?`, 
+      [userEmail]
     );
+
+    // If no cart items found, return an empty array
+    if (rows.length === 0) {
+      return res.status(404).json({ message: 'No cart items found for this email' });
+    }
+
+    // Respond with the fetched cart items
+    res.status(200).json(rows);
+  } catch (error) {
+    console.error('Error fetching cart items:', error);
+    res.status(500).json({ error: 'Error fetching cart items' });
+  }
+});
+
+
+// Remove item from cart
+app.delete('/api/cart/:partnumber', async (req, res) => {
+  const userEmail = req.query.email; // Get email from query parameter
+  const { partnumber } = req.params;
+
+  if (!userEmail) {
+    return res.status(400).json({ error: 'Email parameter is required' });
+  }
+
+  try {
+    const [result] = await pool.query(
+      'DELETE FROM cart WHERE user_email = ? AND partnumber = ?',
+      [userEmail, partnumber]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Item not found in cart' });
+    }
+
     res.json({ message: 'Item removed from cart' });
   } catch (error) {
+    console.error('Error removing item from cart:', error);
     res.status(500).json({ error: 'Error removing item from cart' });
   }
 });
 
+
+
+
 // Clear cart
-app.delete('/api/cart', authenticate, async (req, res) => {
-  const { userId } = req.user;
+app.delete('/api/cart', async (req, res) => {
+  const userEmail = req.query.email; // Get email from query parameter
+
+  if (!userEmail) {
+    return res.status(400).json({ error: 'Email parameter is required' });
+  }
 
   try {
-    const [rows] = await db.query(
-      'DELETE FROM cart WHERE user_id = ?',
-      [userId]
+    const [result] = await pool.query(
+      'DELETE FROM cart WHERE user_email = ?',
+      [userEmail]
     );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: 'No items found in cart to clear' });
+    }
+
     res.json({ message: 'Cart cleared' });
   } catch (error) {
+    console.error('Error clearing cart:', error);
     res.status(500).json({ error: 'Error clearing cart' });
   }
 });
 
+
 // Fetch cart items
-app.get('/api/cart', authenticate, async (req, res) => {
+app.get('/api/cart', async (req, res) => {
   const { userId } = req.user;
 
   try {
@@ -949,17 +985,14 @@ app.post("/login", (req, res) => {
           { expiresIn: "1h" }
         );
 
-       
-        const updateSql =
-          "UPDATE registration SET lastLogin = NOW() WHERE email = ?";
-        pool
-          .query(updateSql, [user.email])
-          .catch((err) => console.error("Error updating lastLogin:", err));
+        const updateSql = "UPDATE registration SET lastLogin = NOW() WHERE email = ?";
+        pool.query(updateSql, [user.email]).catch((err) => console.error("Error updating lastLogin:", err));
 
         return res.json({
           message: "Login Successful",
           token,
           isAdmin: isAdmin,
+          id: user.id // Include user ID in the response
         });
       } else {
         return res.status(401).json({ message: "Login Failed" });
@@ -970,6 +1003,8 @@ app.post("/login", (req, res) => {
       return res.status(500).json({ message: "Internal Server Error" });
     });
 });
+
+
 
 app.post("/verifyToken", (req, res) => {
   const token = req.body.token;
