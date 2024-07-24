@@ -26,7 +26,8 @@ app.use(function (req, res, next) {
 const loggedInUsers = new Set();
 
 salt = 10;
-const secretKey = "waweru";
+
+const secretKey = process.env.JWT_SECRET;
 let pool;
 
 try {
@@ -64,6 +65,99 @@ if (process.env.NODE_ENV === "production") {
 } else {
   pool.host = process.env.INSTANCE_HOST;
 }
+//////////////////////////////////////////users////////////////////////////////////////////
+
+const authenticate = (req, res, next) => {
+  const token = req.headers.authorization?.split(' ')[1];
+  
+  console.log('Received Token:', token); // Debugging line
+  
+  if (!token) {
+    return res.status(401).json({ message: 'Token required' });
+  }
+
+  jwt.verify(token, secretKey, (err, decoded) => {
+    if (err) {
+      console.log('Token Verification Error:', err); // Debugging line
+      return res.status(401).json({ message: 'Invalid token' });
+    }
+
+    req.user = decoded;
+    next();
+  });
+};
+
+
+module.exports = authenticate;
+
+app.post('/api/cart', authenticate, async (req, res) => {
+  const { user } = req; // Access the user from the request object
+  const { partnumber, quantity } = req.body;
+
+  try {
+    const [rows] = await db.query(
+      'INSERT INTO cart (user_id, partnumber, quantity) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE quantity = quantity + VALUES(quantity)',
+      [user.id, partnumber, quantity] // Use user.id from the token payload
+    );
+    res.json({ message: 'Item added to cart' });
+  } catch (error) {
+    console.error('Error adding to cart:', error);
+    res.status(500).json({ error: 'Error adding item to cart' });
+  }
+});
+
+// Remove item from cart
+app.delete('/api/cart/:partnumber', authenticate, async (req, res) => {
+  const { userId } = req.user;
+  const { partnumber } = req.params;
+
+  try {
+    const [rows] = await db.query(
+      'DELETE FROM cart WHERE user_id = ? AND partnumber = ?',
+      [userId, partnumber]
+    );
+    res.json({ message: 'Item removed from cart' });
+  } catch (error) {
+    res.status(500).json({ error: 'Error removing item from cart' });
+  }
+});
+
+// Clear cart
+app.delete('/api/cart', authenticate, async (req, res) => {
+  const { userId } = req.user;
+
+  try {
+    const [rows] = await db.query(
+      'DELETE FROM cart WHERE user_id = ?',
+      [userId]
+    );
+    res.json({ message: 'Cart cleared' });
+  } catch (error) {
+    res.status(500).json({ error: 'Error clearing cart' });
+  }
+});
+
+// Fetch cart items
+app.get('/api/cart', authenticate, async (req, res) => {
+  const { userId } = req.user;
+
+  try {
+    const [rows] = await db.query(
+      'SELECT c.partnumber, c.quantity, p.Description, p.Price, p.image FROM cart c JOIN products p ON c.partnumber = p.partnumber WHERE c.user_id = ?',
+      [userId]
+    );
+    res.json(rows);
+  } catch (error) {
+    res.status(500).json({ error: 'Error fetching cart items' });
+  }
+});
+
+
+
+
+
+
+//////////////////////////////////////users////////////////////////////////////////////////
 
 app.get("/api/admin/orders/count", async (req, res) => {
   try {
@@ -296,15 +390,13 @@ app.get("/api/viewproducts", async (req, res) => {
 app.get("/api/viewproducts/:id", async (req, res) => {
   const productId = req.params.id;
   try {
-    // Query to get product details from the fulldata table
+    
     const productQuery = `
       SELECT p.id, p.partnumber, p.Description, p.image, p.thumb1, p.thumb2, p.mainCategory, p.subCategory
       FROM fulldata p
       WHERE p.id = ?
     `;
     const [product] = await pool.query(productQuery, [productId]);
-
-    // Query to get prices and stock quantities from the product_prices table
     const pricesQuery = `
       SELECT country_code, price, stock_quantity
       FROM product_prices
@@ -403,6 +495,121 @@ app.delete("/api/viewproducts/:id", async (req, res) => {
   }
 });
 
+app.get('/api/admin/products/near-completion', async (req, res) => {
+  try {
+    const [products] = await pool.query(
+      `SELECT f.partnumber, f.description, pp.price, pp.stock_quantity, pp.country_code
+       FROM fulldata f
+       JOIN product_prices pp ON f.id = pp.product_id
+       WHERE pp.stock_quantity <= 12`
+    );
+
+    if (products.length === 0) {
+      return res.status(404).json({ message: 'No products near completion found' });
+    }
+
+    res.status(200).json(products);
+  } catch (error) {
+    console.error('Error fetching products near completion:', error);
+    res.status(500).json({ error: 'Error fetching products near completion' });
+  }
+});
+// Server-side code (Node.js/Express example)
+app.get("/api/admin/notifications", async (req, res) => {
+  try {
+    const query = "SELECT * FROM notifications ORDER BY created_at DESC";
+    const [notifications] = await pool.query(query);
+    res.json(notifications);
+  } catch (error) {
+    console.error("Error fetching notifications:", error);
+    res.status(500).json({ error: "Error fetching notifications" });
+  }
+});
+
+// Add this route to your Express server file (e.g., index.js or routes.js)
+app.put('/api/admin/notifications/:id/read', async (req, res) => {
+  const { id } = req.params;
+
+  const connection = await pool.getConnection();
+  try {
+    await connection.query(
+      `UPDATE notifications SET status = 'read' WHERE id = ?`,
+      [id]
+    );
+
+    res.json({ message: 'Notification marked as read' });
+  } catch (error) {
+    console.error('Error marking notification as read:', error);
+    res.status(500).json({ error: 'Error marking notification as read' });
+  } finally {
+    connection.release();
+  }
+});
+
+
+
+app.get('/api/admin/notifications/count', async (req, res) => {
+  const connection = await pool.getConnection();
+  try {
+    // Fetch the count of unread notifications
+    const [results] = await connection.query(
+      `SELECT COUNT(*) AS count FROM notifications WHERE status = 'unread'`
+    );
+
+    // Send the count as JSON response
+    res.json({ count: results[0].count });
+  } catch (error) {
+    console.error('Error fetching notifications count:', error);
+    res.status(500).json({ error: 'Error fetching notifications count' });
+  } finally {
+    connection.release();
+  }
+});
+
+
+app.get("/api/user/notifications", async (req, res) => {
+  const email = req.query.email;
+
+  try {
+    // Fetch notifications
+    const [notifications] = await pool.query(
+      "SELECT id, message FROM usernotifications WHERE email = ?",
+      [email]
+    );
+
+    // Fetch order numbers if needed
+    const notificationsWithOrderNumber = await Promise.all(
+      notifications.map(async (notification) => {
+        // Assuming you have some way to determine the order id from the notification or fetch it separately
+        // If you don't have orderId, you might need to adjust how you get the order number
+        // Example: Fetch order number directly if you have a way to relate notifications to orders
+        const [orderResult] = await pool.query(
+          "SELECT orderNumber FROM placing_orders WHERE email = ? AND id = ?",
+          [email, notification.id] // Adjust if you have a way to map notification id to order id
+        );
+
+        return {
+          ...notification,
+          orderNumber: orderResult.length ? orderResult[0].orderNumber : "N/A",
+        };
+      })
+    );
+
+    res.status(200).json(notificationsWithOrderNumber);
+  } catch (error) {
+    console.error("Error fetching notifications:", error);
+    res.status(500).json({ error: "Error fetching notifications" });
+  }
+});
+
+
+
+
+
+
+
+
+
 const validateInput = (req, res, next) => {
   const schema = Joi.object({
     companyName: Joi.string().required(),
@@ -477,11 +684,22 @@ app.post("/api/register", validateInput, async (req, res) => {
     ];
 
     await pool.query(insertQuery, values);
+
+    // Insert notification for admin
+    const notificationQuery = `
+      INSERT INTO notifications (message, created_at) 
+      VALUES (?, NOW())
+    `;
+    const notificationMessage = `New user registered: ${normalizedEmail}`;
+    await pool.query(notificationQuery, [notificationMessage]);
+
+    res.status(201).json({ message: "User registered successfully" });
   } catch (err) {
     console.error("Server error:", err);
     res.status(500).json({ error: "Server error" });
   }
 });
+
 app.get("/api/registeredusers", async (req, res) => {
   try {
     const getUsersQuery = "SELECT * FROM registration";
@@ -657,19 +875,42 @@ app.patch("/api/admin/orders/:orderId/status", async (req, res) => {
   const { status } = req.body;
 
   try {
+    // Update the order status
     const [result] = await pool.query(
       "UPDATE placing_orders SET status = ? WHERE id = ?",
       [status, orderId]
     );
+    
     if (result.affectedRows === 0) {
       return res.status(404).json({ message: "Order not found" });
     }
-    res.status(200).json({ message: "Order status updated successfully" });
+
+    // Fetch the user email associated with this order
+    const [orderResult] = await pool.query(
+      "SELECT email FROM placing_orders WHERE id = ?",
+      [orderId]
+    );
+
+    if (orderResult.length === 0) {
+      return res.status(404).json({ message: "Order not found" });
+    }
+
+    const userEmail = orderResult[0].email;
+
+    // Create a notification entry
+    await pool.query(
+      "INSERT INTO usernotifications (email, message) VALUES (?, ?)",
+      [`${userEmail}`, `Your order ${orderId} has been updated to ${status}`]
+    );
+
+    res.status(200).json({ message: "Order status updated and notification sent successfully" });
   } catch (error) {
     console.error("Error updating order status:", error);
     res.status(500).json({ error: "Error updating order status" });
   }
 });
+
+
 
 app.get("/verify-email", (req, res) => {
   const email = req.query.email;
@@ -972,6 +1213,7 @@ app.post("/api/order", async (req, res) => {
   try {
     await connection.beginTransaction();
 
+    // Insert new order
     const [orderResult] = await connection.query(
       `INSERT INTO placing_orders 
          (company_name, title, first_name, second_name, address1, address2, city, zip, phone, email, ordernumber, status, totalprice) 
@@ -994,6 +1236,7 @@ app.post("/api/order", async (req, res) => {
 
     const orderId = orderResult.insertId;
 
+    // Insert order items
     for (const item of cartItems) {
       await connection.query(
         `INSERT INTO order_items (order_id, partnumber, description, quantity, price) 
@@ -1036,6 +1279,15 @@ app.post("/api/order", async (req, res) => {
       }
     }
 
+    // Insert notification for the new order
+    await connection.query(
+      `INSERT INTO notifications (type, message) VALUES (?, ?)`,
+      [
+        'new_order',
+        `New order placed: Order Number ${orderNumber}`
+      ]
+    );
+
     await connection.commit();
     res.status(201).json({ message: "Order placed successfully", orderId });
   } catch (error) {
@@ -1046,6 +1298,7 @@ app.post("/api/order", async (req, res) => {
     connection.release();
   }
 });
+
 
 app.get("/api/orders", async (req, res) => {
   const userId = req.query.userId;
