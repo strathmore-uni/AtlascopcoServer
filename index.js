@@ -13,7 +13,7 @@ require("dotenv").config();
 const { OAuth2Client } = require("google-auth-library");
 const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
-app.use(express.json());
+{/** 
 app.use(function (req, res, next) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader(
@@ -22,7 +22,15 @@ app.use(function (req, res, next) {
   );
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
   next();
-});
+});*/}
+app.use(cors({
+  origin: 'https://localhost:3000', // Allow requests from your frontend origin
+  methods: 'GET,POST,PUT,DELETE,PATCH,OPTIONS',
+  allowedHeaders: 'Content-Type,Authorization' // Allow Authorization header
+}));
+
+app.use(express.json());
+
 const loggedInUsers = new Set();
 
 salt = 10;
@@ -379,39 +387,50 @@ app.get("/verify-email", (req, res) => {
 
 app.post("/login", (req, res) => {
   const sql = "SELECT * FROM registration WHERE email = ? AND password = ?";
-  pool
-    .query(sql, [req.body.email, req.body.password])
+  const email = req.body.email;
+  const password = req.body.password;
+
+  console.log('Login attempt with email:', email);
+
+  pool.query(sql, [email, password])
     .then(([users]) => {
       if (users.length > 0) {
         const user = users[0];
-        const isAdmin = user.email === "admin@gmail.com";
+        const isAdmin = user.role === "superadmin";
+        const isMiniAdmin = user.role === "admin";
         const token = jwt.sign(
-          { email: user.email, isAdmin: isAdmin },
-          secretKey,
+          { 
+            email: user.email, 
+            isAdmin: isAdmin, 
+            isMiniAdmin: isMiniAdmin, 
+            country: user.country, // Include country in the token
+           
+          }, 
+          secretKey, 
           { expiresIn: "1h" }
         );
-
-        const updateSql =
-          "UPDATE registration SET lastLogin = NOW() WHERE email = ?";
-        pool
-          .query(updateSql, [user.email])
-          .catch((err) => console.error("Error updating lastLogin:", err));
 
         return res.json({
           message: "Login Successful",
           token,
           isAdmin: isAdmin,
-          id: user.id, // Include user ID in the response
+          isMiniAdmin: isMiniAdmin,
+          country: user.country // Include country in the response
         });
       } else {
+        console.log('Login failed for email:', email);
         return res.status(401).json({ message: "Login Failed" });
       }
     })
     .catch((err) => {
-      console.error(err);
+      console.error("Error during login:", err);
       return res.status(500).json({ message: "Internal Server Error" });
     });
 });
+
+
+
+
 
 app.post("/verifyToken", (req, res) => {
   const token = req.body.token;
@@ -423,20 +442,26 @@ app.post("/verifyToken", (req, res) => {
     if (err) {
       return res.status(401).json({ message: "Invalid token" });
     }
-    res.json({ email: decoded.email });
+    res.json({ email: decoded.email, isAdmin: decoded.isAdmin, country: decoded.country });
   });
 });
+
 app.use((req, res, next) => {
   const token = req.headers.authorization?.split(" ")[1];
   if (token) {
     jwt.verify(token, secretKey, (err, decoded) => {
       if (!err) {
-        loggedInUsers.add(decoded.email);
+        loggedInUsers.add({
+          email: decoded.email,
+          isAdmin: decoded.isAdmin,
+          country: decoded.country,
+        });
       }
     });
   }
   next();
 });
+
 app.get("/api/myproducts", async (req, res) => {
   const userEmail = req.query.email;
 
@@ -541,8 +566,8 @@ app.post("/api/order", async (req, res) => {
     // Insert new order
     const [orderResult] = await connection.query(
       `INSERT INTO placing_orders 
-         (company_name, title, first_name, second_name, address1, address2, city, zip, phone, email, ordernumber, status, totalprice) 
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending', ?)`,
+         (company_name, title, first_name, second_name, address1, address2, city, zip, phone, email, ordernumber, status, totalprice,country) 
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending', ?,?)`,
       [
         formData.companyName,
         formData.title,
@@ -556,70 +581,36 @@ app.post("/api/order", async (req, res) => {
         formData.email,
         orderNumber,
         newPrice,
+         formData.country,
       ]
     );
-
-    const orderId = orderResult.insertId;
 
     // Insert order items
     for (const item of cartItems) {
       await connection.query(
-        `INSERT INTO order_items (order_id, partnumber, description, quantity, price) 
-           VALUES (?, ?, ?, ?, ?)`,
-        [orderId, item.partnumber, item.Description, item.quantity, item.Price]
+        `INSERT INTO order_items (order_id, description, partnumber, price, quantity) 
+         VALUES (?, ?, ?, ?, ?)`,
+        [
+          orderResult.insertId, // Use the newly created order ID
+          item.description,
+          item.partnumber,
+          item.price,
+          item.quantity
+        ]
       );
-
-      const [productResult] = await connection.query(
-        `SELECT id FROM fulldata WHERE partnumber = ?`,
-        [item.partnumber]
-      );
-
-      if (productResult.length > 0) {
-        const productId = productResult[0].id;
-        const [stockResult] = await connection.query(
-          `SELECT stock_quantity FROM product_prices WHERE product_id = ?`,
-          [productId]
-        );
-
-        if (stockResult.length > 0) {
-          const currentStock = stockResult[0].stock_quantity;
-
-          if (currentStock >= item.quantity) {
-            await connection.query(
-              `UPDATE product_prices SET stock_quantity = stock_quantity - ? WHERE product_id = ?`,
-              [item.quantity, productId]
-            );
-          } else {
-            throw new Error(
-              `Insufficient stock for product ${item.partnumber}`
-            );
-          }
-        } else {
-          throw new Error(`Stock record not found for product ID ${productId}`);
-        }
-      } else {
-        throw new Error(
-          `Product with part number ${item.partnumber} not found`
-        );
-      }
     }
 
-    // Insert notification for the new order
-    await connection.query(
-      `INSERT INTO notifications (type, message) VALUES (?, ?)`,
-      ["new_order", `New order placed: Order Number ${orderNumber}`]
-    );
-
     await connection.commit();
-    res.status(201).json({ message: "Order placed successfully", orderId });
+    res.json({ message: 'Order placed successfully' });
   } catch (error) {
     await connection.rollback();
-    console.error("Error placing order:", error);
-    res.status(500).send(error.message);
+    console.error('Error processing order:', error);
+    res.status(500).json({ error: 'Error processing order' });
   } finally {
     connection.release();
   }
 });
+
 
 app.get("/api/orders", async (req, res) => {
   const userId = req.query.userId;
@@ -810,10 +801,33 @@ app.get("/api/products/partnumber/:partnumber", async (req, res) => {
 
 /////////////////////////Admin//////////////////////////////////////////////
 app.get("/api/admin/orders/count", async (req, res) => {
+  const adminEmail = req.query.email;
+
+  if (!adminEmail) {
+    return res.status(401).json({ error: "Unauthorized: No email provided" });
+  }
+
   try {
-    const [rows] = await pool.query(
-      "SELECT COUNT(*) AS count FROM placing_orders"
-    );
+    // Fetch the admin's country and role from the registration table
+    const countryCodeQuery = "SELECT country, role FROM registration WHERE email = ?";
+    const [countryCodeResult] = await pool.query(countryCodeQuery, [adminEmail]);
+
+    if (countryCodeResult.length === 0) {
+      return res.status(404).json({ error: "Admin not found" });
+    }
+
+    const { country: adminCountryCode, role: adminRole } = countryCodeResult[0];
+
+    let orderCountQuery = "SELECT COUNT(*) AS count FROM placing_orders";
+    let queryParams = [];
+
+    // If the user is not a superadmin, filter by country
+    if (adminRole !== 'superadmin' && adminCountryCode !== 'SUPERADMIN') {
+      orderCountQuery += " WHERE country = ?";
+      queryParams.push(adminCountryCode);
+    }
+
+    const [rows] = await pool.query(orderCountQuery, queryParams);
     res.json({ count: rows[0].count });
   } catch (error) {
     console.error("Error fetching order count:", error);
@@ -831,49 +845,196 @@ app.get("/api/admin/products/count", async (req, res) => {
   }
 });
 
+
+
 app.get("/api/admin/users/count", async (req, res) => {
+  const adminEmail = req.query.email;
+
+  if (!adminEmail) {
+    return res.status(401).json({ error: "Unauthorized: No email provided" });
+  }
+
   try {
-    const [rows] = await pool.query(
-      "SELECT COUNT(*) AS count FROM registration"
-    );
+    // Fetch the admin's country and role from the registration table
+    const countryCodeQuery = "SELECT country, role FROM registration WHERE email = ?";
+    const [countryCodeResult] = await pool.query(countryCodeQuery, [adminEmail]);
+
+    if (countryCodeResult.length === 0) {
+      return res.status(404).json({ error: "Admin not found" });
+    }
+
+    const { country: adminCountryCode, role: adminRole } = countryCodeResult[0];
+
+    let userCountQuery = "SELECT COUNT(*) AS count FROM registration";
+    let queryParams = [];
+
+    // If the user is not a superadmin, filter by country
+    if (adminRole !== 'superadmin' && adminCountryCode !== 'SUPERADMIN') {
+      userCountQuery += " WHERE country = ?";
+      queryParams.push(adminCountryCode);
+    }
+
+    const [rows] = await pool.query(userCountQuery, queryParams);
     res.json({ count: rows[0].count });
   } catch (error) {
     console.error("Error fetching user count:", error);
     res.status(500).json({ error: "Error fetching user count" });
   }
 });
+
 app.get("/api/admin/orders/recent", async (req, res) => {
+  const adminEmail = req.query.email;
+
+  if (!adminEmail) {
+    return res.status(401).json({ error: "Unauthorized: No email provided" });
+  }
+
   try {
+    // Fetch the admin's country and role from the registration table
+    const countryCodeQuery = "SELECT country, role FROM registration WHERE email = ?";
+    const [countryCodeResult] = await pool.query(countryCodeQuery, [adminEmail]);
+
+    if (countryCodeResult.length === 0) {
+      return res.status(404).json({ error: "Admin not found" });
+    }
+
+    const { country: adminCountryCode, role: adminRole } = countryCodeResult[0];
+
+    // Debugging: Log admin details
+
+    // Calculate the date for seven days ago
     const sevenDaysAgo = new Date();
     sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
 
-    const recentOrders = await pool.query(
-      `SELECT po.id, po.ordernumber, po.created_at, po.status, r.email
-       FROM placing_orders po
-       LEFT JOIN registration r ON po.email = r.email
-       WHERE po.created_at >= ?`,
-      [sevenDaysAgo]
-    );
+    // Define the base query for fetching recent orders
+    let getOrdersQuery = `
+      SELECT po.id, po.ordernumber, po.created_at, po.status, r.email
+      FROM placing_orders po
+      LEFT JOIN registration r ON po.email = r.email
+      WHERE po.created_at >= ?
+    `;
+    
+    let queryParams = [sevenDaysAgo];
 
-    res.json(recentOrders[0]);
+    // If the user is not a superadmin, filter by country
+    if (adminRole !== 'superadmin' && adminCountryCode !== 'SUPERADMIN') {
+      getOrdersQuery += " AND r.country = ?";
+      queryParams.push(adminCountryCode);
+    }
+
+    // Debugging: Log final query and parameters
+
+    const [recentOrders] = await pool.query(getOrdersQuery, queryParams);
+
+    if (recentOrders.length === 0) {
+      return res.status(404).json({ message: "No recent orders found" });
+    }
+
+    res.status(200).json(recentOrders);
   } catch (error) {
     console.error("Error fetching recent orders:", error);
     res.status(500).json({ error: "Failed to fetch recent orders" });
   }
 });
 
-app.get("/api/admin/orders/pending", async (req, res) => {
+app.get("/api/admin/orders/groupedByCountry", async (req, res) => {
+  const adminEmail = req.query.email;
+
+  if (!adminEmail) {
+    return res.status(401).json({ error: "Unauthorized: No email provided" });
+  }
+
   try {
-    const [orders] = await pool.query(
-      `SELECT placing_orders.*, 
-              GROUP_CONCAT(JSON_OBJECT('description', oi.description, 'quantity', oi.quantity, 'price', oi.price)) as items
-       FROM placing_orders
-       LEFT JOIN order_items oi ON placing_orders.id = oi.order_id
-       WHERE placing_orders.status = 'Pending'
-       GROUP BY placing_orders.id`
-    );
+    const countryCodeQuery = "SELECT country, role FROM registration WHERE email = ?";
+    const [countryCodeResult] = await pool.query(countryCodeQuery, [adminEmail]);
+
+    if (countryCodeResult.length === 0) {
+      return res.status(404).json({ error: "Admin not found" });
+    }
+
+    const { country: adminCountryCode, role: adminRole } = countryCodeResult[0];
+
+    let getOrdersQuery = `
+      SELECT po.id, po.ordernumber, po.created_at, po.status, r.email, r.country
+      FROM placing_orders po
+      LEFT JOIN registration r ON po.email = r.email
+    `;
+    
+    let queryParams = [];
+
+    if (adminRole !== 'superadmin' && adminCountryCode !== 'SUPERADMIN') {
+      getOrdersQuery += " WHERE r.country = ?";
+      queryParams.push(adminCountryCode);
+    }
+
+    const [orders] = await pool.query(getOrdersQuery, queryParams);
+
+    if (orders.length === 0) {
+      return res.status(404).json({ message: "No orders found" });
+    }
+
+    const groupedOrders = orders.reduce((acc, order) => {
+      if (!acc[order.country]) {
+        acc[order.country] = [];
+      }
+      acc[order.country].push(order);
+      return acc;
+    }, {});
+
+    res.status(200).json(groupedOrders);
+  } catch (error) {
+    console.error("Error fetching orders:", error);
+    res.status(500).json({ error: "Error fetching orders" });
+  }
+});
+
+
+
+app.get("/api/admin/orders/pending", async (req, res) => {
+  const adminEmail = req.query.email;
+
+  if (!adminEmail) {
+    return res.status(401).json({ error: "Unauthorized: No email provided" });
+  }
+
+  try {
+    // Fetch the admin's country and role from the registration table
+    const countryCodeQuery = "SELECT country, role FROM registration WHERE email = ?";
+    const [countryCodeResult] = await pool.query(countryCodeQuery, [adminEmail]);
+
+    if (countryCodeResult.length === 0) {
+      return res.status(404).json({ error: "Admin not found" });
+    }
+
+    const { country: adminCountryCode, role: adminRole } = countryCodeResult[0];
+
+    // Debugging: Log admin details
+    console.log(`Admin Email: ${adminEmail}, Country: ${adminCountryCode}, Role: ${adminRole}`);
+
+    // Define the base query for fetching pending orders
+    let getOrdersQuery = `
+      SELECT placing_orders.*, 
+             GROUP_CONCAT(JSON_OBJECT('description', oi.description, 'quantity', oi.quantity, 'price', oi.price)) as items
+      FROM placing_orders
+      LEFT JOIN order_items oi ON placing_orders.id = oi.order_id
+      WHERE placing_orders.status = 'Pending'
+    `;
+    
+    let queryParams = [];
+
+    // If the user is not a superadmin, filter by country
+    if (adminRole !== 'superadmin' && adminCountryCode !== 'SUPERADMIN') {
+      getOrdersQuery += " AND placing_orders.country = ?";
+      queryParams.push(adminCountryCode);
+    }
+
+    // Group the results by order ID
+    getOrdersQuery += " GROUP BY placing_orders.id";
+
+
+  
+
+    const [orders] = await pool.query(getOrdersQuery, queryParams);
 
     if (orders.length === 0) {
       return res.status(404).json({ message: "No pending orders found" });
@@ -891,19 +1052,55 @@ app.get("/api/admin/orders/pending", async (req, res) => {
     res.status(500).json({ error: "Error fetching pending orders" });
   }
 });
+
 app.get("/api/admin/orders/approved", async (req, res) => {
+  const adminEmail = req.query.email;
+
+  if (!adminEmail) {
+    return res.status(401).json({ error: "Unauthorized: No email provided" });
+  }
+
   try {
-    const [orders] = await pool.query(
-      `SELECT placing_orders.*, 
-              GROUP_CONCAT(JSON_OBJECT('description', oi.description, 'quantity', oi.quantity, 'price', oi.price)) as items
-       FROM placing_orders
-       LEFT JOIN order_items oi ON placing_orders.id = oi.order_id
-       WHERE placing_orders.status = 'Approved'
-       GROUP BY placing_orders.id`
-    );
+    // Fetch the admin's country and role from the registration table
+    const countryCodeQuery = "SELECT country, role FROM registration WHERE email = ?";
+    const [countryCodeResult] = await pool.query(countryCodeQuery, [adminEmail]);
+
+    if (countryCodeResult.length === 0) {
+      return res.status(404).json({ error: "Admin not found" });
+    }
+
+    const { country: adminCountryCode, role: adminRole } = countryCodeResult[0];
+
+    // Debugging: Log admin details
+    console.log(`Admin Email: ${adminEmail}, Country: ${adminCountryCode}, Role: ${adminRole}`);
+
+    // Define the base query for fetching pending orders
+    let getOrdersQuery = `
+      SELECT placing_orders.*, 
+             GROUP_CONCAT(JSON_OBJECT('description', oi.description, 'quantity', oi.quantity, 'price', oi.price)) as items
+      FROM placing_orders
+      LEFT JOIN order_items oi ON placing_orders.id = oi.order_id
+      WHERE placing_orders.status = 'Approved'
+    `;
+    
+    let queryParams = [];
+
+    // If the user is not a superadmin, filter by country
+    if (adminRole !== 'superadmin' && adminCountryCode !== 'SUPERADMIN') {
+      getOrdersQuery += " AND placing_orders.country = ?";
+      queryParams.push(adminCountryCode);
+    }
+
+    // Group the results by order ID
+    getOrdersQuery += " GROUP BY placing_orders.id";
+
+
+  
+
+    const [orders] = await pool.query(getOrdersQuery, queryParams);
 
     if (orders.length === 0) {
-      return res.status(404).json({ message: "No approved orders found" });
+      return res.status(404).json({ message: "No pending orders found" });
     }
 
     const formattedOrders = orders.map((order) => ({
@@ -914,23 +1111,58 @@ app.get("/api/admin/orders/approved", async (req, res) => {
 
     res.status(200).json(formattedOrders);
   } catch (error) {
-    console.error("Error fetching approved orders:", error);
-    res.status(500).json({ error: "Error fetching approved orders" });
+    console.error("Error fetching pending orders:", error);
+    res.status(500).json({ error: "Error fetching pending orders" });
   }
 });
 app.get("/api/admin/orders/cancelled", async (req, res) => {
+  const adminEmail = req.query.email;
+
+  if (!adminEmail) {
+    return res.status(401).json({ error: "Unauthorized: No email provided" });
+  }
+
   try {
-    const [orders] = await pool.query(
-      `SELECT placing_orders.*, 
-              GROUP_CONCAT(JSON_OBJECT('description', oi.description, 'quantity', oi.quantity, 'price', oi.price)) as items
-       FROM placing_orders
-       LEFT JOIN order_items oi ON placing_orders.id = oi.order_id
-       WHERE placing_orders.status = 'Cancelled'
-       GROUP BY placing_orders.id`
-    );
+    // Fetch the admin's country and role from the registration table
+    const countryCodeQuery = "SELECT country, role FROM registration WHERE email = ?";
+    const [countryCodeResult] = await pool.query(countryCodeQuery, [adminEmail]);
+
+    if (countryCodeResult.length === 0) {
+      return res.status(404).json({ error: "Admin not found" });
+    }
+
+    const { country: adminCountryCode, role: adminRole } = countryCodeResult[0];
+
+    // Debugging: Log admin details
+    console.log(`Admin Email: ${adminEmail}, Country: ${adminCountryCode}, Role: ${adminRole}`);
+
+    // Define the base query for fetching pending orders
+    let getOrdersQuery = `
+      SELECT placing_orders.*, 
+             GROUP_CONCAT(JSON_OBJECT('description', oi.description, 'quantity', oi.quantity, 'price', oi.price)) as items
+      FROM placing_orders
+      LEFT JOIN order_items oi ON placing_orders.id = oi.order_id
+      WHERE placing_orders.status = 'Cancelled'
+    `;
+    
+    let queryParams = [];
+
+    // If the user is not a superadmin, filter by country
+    if (adminRole !== 'superadmin' && adminCountryCode !== 'SUPERADMIN') {
+      getOrdersQuery += " AND placing_orders.country = ?";
+      queryParams.push(adminCountryCode);
+    }
+
+    // Group the results by order ID
+    getOrdersQuery += " GROUP BY placing_orders.id";
+
+
+  
+
+    const [orders] = await pool.query(getOrdersQuery, queryParams);
 
     if (orders.length === 0) {
-      return res.status(404).json({ message: "No cancelled orders found" });
+      return res.status(404).json({ message: "No pending orders found" });
     }
 
     const formattedOrders = orders.map((order) => ({
@@ -941,34 +1173,75 @@ app.get("/api/admin/orders/cancelled", async (req, res) => {
 
     res.status(200).json(formattedOrders);
   } catch (error) {
-    console.error("Error fetching cancelled orders:", error);
-    res.status(500).json({ error: "Error fetching cancelled orders" });
+    console.error("Error fetching pending orders:", error);
+    res.status(500).json({ error: "Error fetching pending orders" });
   }
 });
 app.get("/api/admin/orders/orders", async (req, res) => {
+  const adminEmail = req.query.email;
+
+  if (!adminEmail) {
+    return res.status(401).json({ error: "Unauthorized: No email provided" });
+  }
+
   try {
-    const [orders] = await pool.query(
-      `SELECT placing_orders.*, 
-              GROUP_CONCAT(JSON_OBJECT('description', oi.description, 'quantity', oi.quantity, 'price', oi.price)) as items,
-              placing_orders.status
-       FROM placing_orders
-       LEFT JOIN order_items oi ON placing_orders.id = oi.order_id
-       GROUP BY placing_orders.id`
-    );
+    // Fetch the admin's country and role from the registration table
+    const countryCodeQuery = "SELECT country, role FROM registration WHERE email = ?";
+    const [countryCodeResult] = await pool.query(countryCodeQuery, [adminEmail]);
+
+    if (countryCodeResult.length === 0) {
+      return res.status(404).json({ error: "Admin not found" });
+    }
+
+    const { country: adminCountryCode, role: adminRole } = countryCodeResult[0];
+
+    // Debugging: Log admin details
+    console.log(`Admin Email: ${adminEmail}, Country: ${adminCountryCode}, Role: ${adminRole}`);
+
+    // Define the base query for fetching orders
+    let getOrdersQuery = `
+      SELECT placing_orders.*, 
+             GROUP_CONCAT(JSON_OBJECT('description', oi.description, 'quantity', oi.quantity, 'price', oi.price)) as items,
+             placing_orders.status
+      FROM placing_orders
+      LEFT JOIN order_items oi ON placing_orders.id = oi.order_id
+    `;
+    
+    let queryParams = [];
+
+    // If the user is not a superadmin, filter by country
+    if (adminRole !== 'superadmin' && adminCountryCode !== 'SUPERADMIN') {
+      getOrdersQuery += " WHERE placing_orders.country = ?";
+      queryParams.push(adminCountryCode);
+    }
+
+    // Group the results by order ID
+    getOrdersQuery += " GROUP BY placing_orders.id";
+
+    // Debugging: Log final query and parameters
+
+    const [orders] = await pool.query(getOrdersQuery, queryParams);
+
     if (orders.length === 0) {
       return res.status(404).json({ message: "No orders found" });
     }
+
     const formattedOrders = orders.map((order) => ({
       ...order,
       items: order.items ? JSON.parse(`[${order.items}]`) : [],
       orderNumber: order.ordernumber,
     }));
+
     res.status(200).json(formattedOrders);
   } catch (error) {
     console.error("Error fetching orders:", error);
     res.status(500).json({ error: "Error fetching orders" });
   }
 });
+
+
+
+
 
 app.post("/api/newproducts", async (req, res) => {
   const {
@@ -1018,11 +1291,75 @@ app.post("/api/newproducts", async (req, res) => {
     res.status(500).json({ error: "Internal server error" });
   }
 });
+app.post("/api/newproducts/batch", async (req, res) => {
+  const products = req.body; // Expecting an array of products
+
+  if (!Array.isArray(products) || products.length === 0) {
+    return res.status(400).json({ error: 'Invalid products data' });
+  }
+
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+
+    for (const product of products) {
+      const {
+        partnumber,
+        description,
+        image,
+        thumb1,
+        thumb2,
+        prices,
+        stock,
+        mainCategory,
+        subCategory,
+      } = product;
+
+      // Insert product into the fulldata table
+      const insertProductQuery = `
+        INSERT INTO fulldata (partnumber, Description, image, thumb1, thumb2, mainCategory, subCategory)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `;
+      const [result] = await connection.query(insertProductQuery, [
+        partnumber,
+        description,
+        image,
+        thumb1,
+        thumb2,
+        mainCategory,
+        subCategory,
+      ]);
+
+      const productId = result.insertId;
+
+      // Insert prices into the product_prices table
+      const insertPricesQuery =
+        "INSERT INTO product_prices (product_id, country_code, price, stock_quantity) VALUES ?";
+      const priceValues = prices.map((price) => [
+        productId,
+        price.country_code,
+        price.price,
+        stock, // assuming stock is the same for all countries
+      ]);
+      await connection.query(insertPricesQuery, [priceValues]);
+    }
+
+    await connection.commit();
+    res.status(201).json({ message: "Products added successfully" });
+  } catch (error) {
+    await connection.rollback();
+    console.error("Error adding products:", error);
+    res.status(500).json({ error: "Internal server error" });
+  } finally {
+    connection.release();
+  }
+});
+
 
 app.get("/api/viewproducts", async (req, res) => {
   try {
     const productsQuery = `
-      SELECT p.id, p.partnumber, p.Description, p.image, p.thumb1, p.thumb2
+      SELECT p.id, p.partnumber, p.Description, p.mainCategory,p.subCategory, p.image, p.thumb1, p.thumb2
       FROM fulldata p
     `;
     const [products] = await pool.query(productsQuery);
@@ -1121,22 +1458,30 @@ app.put("/api/viewproducts/:id", async (req, res) => {
 
 app.delete("/api/viewproducts/:id", async (req, res) => {
   const { id } = req.params;
+  const connection = await pool.getConnection();
+
   try {
-    await pool.query("START TRANSACTION");
-    await pool.query(
-      "DELETE FROM atlascopcoproduct_prices WHERE product_id = ?",
-      [id]
-    );
-    await pool.query("DELETE FROM stock WHERE product_id = ?", [id]);
-    await pool.query("DELETE FROM fulldata WHERE id = ?", [id]);
-    await pool.query("COMMIT");
+    await connection.beginTransaction();
+
+    // Delete from order_items table first if necessary
+
+    // Delete from product_prices table
+    await connection.query("DELETE FROM product_prices WHERE product_id = ?", [id]);
+
+    // Delete from fulldata table
+    await connection.query("DELETE FROM fulldata WHERE id = ?", [id]);
+
+    await connection.commit();
     res.json({ message: "Product deleted successfully" });
   } catch (error) {
-    await pool.query("ROLLBACK");
+    await connection.rollback();
     console.error("Error deleting product:", error);
     res.status(500).json({ error: "Failed to delete product" });
+  } finally {
+    connection.release();
   }
 });
+
 
 app.get("/api/admin/products/near-completion", async (req, res) => {
   try {
@@ -1194,9 +1539,26 @@ app.put("/api/admin/notifications/:id/read", async (req, res) => {
 app.get("/api/admin/notifications/count", async (req, res) => {
   const connection = await pool.getConnection();
   try {
-    // Fetch the count of unread notifications
+    const adminEmail = req.query.email;
+    if (!adminEmail) {
+      return res.status(400).json({ error: "Admin email is required" });
+    }
+
+    const [admin] = await connection.query(
+      "SELECT country FROM registration WHERE email = ?",
+      [adminEmail]
+    );
+
+    if (admin.length === 0) {
+      return res.status(404).json({ error: "Admin not found" });
+    }
+
+    const adminCountry = admin[0].country;
+
+    // Fetch the count of unread notifications for the admin's country
     const [results] = await connection.query(
-      `SELECT COUNT(*) AS count FROM notifications WHERE status = 'unread'`
+      `SELECT COUNT(*) AS count FROM notifications WHERE status = 'unread' AND country = ?`,
+      [adminCountry]
     );
 
     // Send the count as JSON response
@@ -1210,10 +1572,42 @@ app.get("/api/admin/notifications/count", async (req, res) => {
 });
 
 
-app.get("/api/registeredusers", async (req, res) => {
+
+app.get('/api/registeredusers', async (req, res) => {
+  const adminEmail = req.query.email;
+  const filterCountry = req.query.country; // Added filterCountry parameter
+
+  if (!adminEmail) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
   try {
-    const getUsersQuery = "SELECT * FROM registration";
-    const [users] = await pool.query(getUsersQuery);
+    // Fetch the admin's country from the registration table
+    const countryCodeQuery = "SELECT country, role FROM registration WHERE email = ?";
+    const [countryCodeResult] = await pool.query(countryCodeQuery, [adminEmail]);
+
+    if (countryCodeResult.length === 0) {
+      return res.status(404).json({ error: "Admin not found" });
+    }
+
+    const { country: adminCountryCode, role: adminRole } = countryCodeResult[0];
+
+    let getUsersQuery = "SELECT * FROM registration";
+    let queryParams = [];
+
+    // If the user is not a superadmin, filter by country
+    if (adminRole !== 'superadmin') {
+      getUsersQuery += " WHERE country = ?";
+      queryParams.push(adminCountryCode);
+    }
+
+    // Apply additional country filter if provided
+    if (filterCountry) {
+      getUsersQuery += adminRole === 'superadmin' ? " WHERE country = ?" : " AND country = ?";
+      queryParams.push(filterCountry);
+    }
+
+    const [users] = await pool.query(getUsersQuery, queryParams);
 
     res.json(users);
   } catch (error) {
@@ -1221,6 +1615,8 @@ app.get("/api/registeredusers", async (req, res) => {
     res.status(500).json({ error: "Internal server error" });
   }
 });
+
+
 
 app.get("/api/registeredusers/:id", async (req, res) => {
   try {
@@ -1530,8 +1926,167 @@ app.put("/api/user/update", async (req, res) => {
   }
 });
 
-//////////////////////////////Admin....
+//////////////////////////////Admin/////////////////////////////////////////
 
+
+
+
+////////////////////////////MinAdmin/////////////////////////////////////////
+
+
+app.get('/api/minadmin/users/count', async (req, res) => {
+  const userEmail = req.query.email;
+
+  if (!userEmail) {
+    console.error("No user email provided");
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  try {
+    const countryCodeQuery = "SELECT country FROM registration WHERE email = ?";
+    const [countryCodeResult] = await pool.query(countryCodeQuery, [userEmail]);
+
+    if (countryCodeResult.length === 0) {
+      console.error(`User not found with email: ${userEmail}`);
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const userCountryCode = countryCodeResult[0].country;
+ 
+
+    // Fetch the count of users from the same country
+    const sql = "SELECT COUNT(*) AS count FROM registration WHERE country = ?";
+    const [results] = await pool.query(sql, [userCountryCode]);
+
+    res.json(results[0]);
+  } catch (error) {
+    console.error('Error fetching user count:', error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+app.get("/api/minadmin/orders/count", async (req, res) => {
+  const userEmail = req.query.email;
+
+  if (!userEmail) {
+    console.error("No user email provided");
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  try {
+    // Fetch the user's country from the registration table
+    const countryCodeQuery = "SELECT country FROM registration WHERE email = ?";
+    const [countryCodeResult] = await pool.query(countryCodeQuery, [userEmail]);
+
+    if (countryCodeResult.length === 0) {
+      console.error(`User not found with email: ${userEmail}`);
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const userCountryCode = countryCodeResult[0].country;
+    console.log(`User country code: ${userCountryCode}`);
+
+    // Fetch the count of orders from placing_orders where the country matches
+    const ordersCountQuery = `
+      SELECT COUNT(*) AS count 
+      FROM placing_orders 
+      WHERE country = ?
+    `;
+    const [rows] = await pool.query(ordersCountQuery, [userCountryCode]);
+
+    console.log(`Orders count for country ${userCountryCode}: ${rows[0].count}`);
+
+    res.json({ count: rows[0].count });
+  } catch (error) {
+    console.error("Error fetching order count:", error);
+    res.status(500).json({ error: "Error fetching order count" });
+  }
+});
+
+
+
+
+app.get("/api/minadmin/products/count", async (req, res) => {
+  const userEmail = req.query.email;
+
+  if (!userEmail) {
+    console.error("No user email provided");
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  try {
+    // Fetch the country based on the user's email
+    const countryCodeQuery = "SELECT country FROM registration WHERE email = ?";
+    const [countryCodeResult] = await pool.query(countryCodeQuery, [userEmail]);
+
+    if (countryCodeResult.length === 0) {
+      console.error(`User not found with email: ${userEmail}`);
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const userCountryCode = countryCodeResult[0].country;
+    console.log(`User country code: ${userCountryCode}`);
+
+    // Fetch the count of products based on the user's country
+    const countQuery = `
+      SELECT COUNT(*) AS count
+      FROM fulldata p
+      JOIN product_prices pp ON p.id = pp.product_id
+      WHERE pp.country_code = ?
+    `;
+    const [countResult] = await pool.query(countQuery, [userCountryCode]);
+
+    res.json({ count: countResult[0].count });
+  } catch (error) {
+    console.error("Error fetching product count:", error);
+    res.status(500).json({ error: "Error fetching product count" });
+  }
+});
+
+
+app.get("/api/miniadmin/registeredusers", async (req, res) => {
+  const adminEmail = req.query.email;
+
+  if (!adminEmail) {
+    console.error("No admin email provided");
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  try {
+    // Fetch the admin's country from the registration table
+    const countryCodeQuery = "SELECT country FROM registration WHERE email = ?";
+    const [countryCodeResult] = await pool.query(countryCodeQuery, [adminEmail]);
+
+    if (countryCodeResult.length === 0) {
+      console.error(`Admin not found with email: ${adminEmail}`);
+      return res.status(404).json({ error: "Admin not found" });
+    }
+
+    const adminCountryCode = countryCodeResult[0].country;
+    console.log(`Admin country code: ${adminCountryCode}`);
+
+    // Fetch registered users from the same country as the admin
+    const getUsersQuery = "SELECT * FROM registration WHERE country = ?";
+    const [users] = await pool.query(getUsersQuery, [adminCountryCode]);
+
+    res.json(users);
+  } catch (error) {
+    console.error("Error fetching users:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+
+
+
+
+
+
+
+
+
+
+//////////////////////////MinAdmin//////////////////////////////////////////
 const port = process.env.PORT || 3001;
 const server = http.createServer(app);
 
