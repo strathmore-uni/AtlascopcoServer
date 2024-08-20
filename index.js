@@ -8,17 +8,20 @@ const http = require("http");
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const Joi = require("joi");
+const axios = require('axios');
+
 require("dotenv").config();
 
 const { OAuth2Client, auth } = require("google-auth-library");
 const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
 const userSettings = {
-  theme: 'light',
-  language: 'en',
+  theme: "light",
+  language: "en",
   notifications: true,
 };
-{/** 
+{
+  /** 
 app.use(function (req, res, next) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader(
@@ -27,12 +30,15 @@ app.use(function (req, res, next) {
   );
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
   next();
-});*/}
-app.use(cors({
-  origin: 'https://localhost:3000', // Allow requests from your frontend origin
-  methods: 'GET,POST,PUT,DELETE,PATCH,OPTIONS',
-  allowedHeaders: 'Content-Type,Authorization' // Allow Authorization header
-}));
+});*/
+}
+app.use(
+  cors({
+    origin: "https://localhost:3000", // Allow requests from your frontend origin
+    methods: "GET,POST,PUT,DELETE,PATCH,OPTIONS",
+    allowedHeaders: "Content-Type,Authorization,user-email", // Allow Authorization header
+  })
+);
 
 app.use(express.json());
 
@@ -83,7 +89,9 @@ app.post("/api/cart", async (req, res) => {
   const { userEmail, orderId } = req.body;
 
   if (!userEmail || !orderId) {
-    return res.status(400).json({ error: "User email and order ID are required" });
+    return res
+      .status(400)
+      .json({ error: "User email and order ID are required" });
   }
 
   try {
@@ -101,12 +109,17 @@ app.post("/api/cart", async (req, res) => {
     }
 
     // Insert or update cart items in bulk
-    const values = orderItems.map(item => [
-      userEmail, item.partnumber, item.quantity, item.description, item.price, item.image
+    const values = orderItems.map((item) => [
+      userEmail,
+      item.partnumber,
+      item.quantity,
+      item.description,
+      item.price,
+      item.image,
     ]);
 
     // Generating the query dynamically
-    const placeholders = values.map(() => '(?,?,?,?,?,?)').join(',');
+    const placeholders = values.map(() => "(?,?,?,?,?,?)").join(",");
     const sql = `
       INSERT INTO cart (user_email, partnumber, quantity, description, price, image)
       VALUES ${placeholders}
@@ -256,17 +269,14 @@ app.get("/api/user/notifications", async (req, res) => {
     // Fetch order numbers if needed
     const notificationsWithOrderNumber = await Promise.all(
       notifications.map(async (notification) => {
-        // Assuming you have some way to determine the order id from the notification or fetch it separately
-        // If you don't have orderId, you might need to adjust how you get the order number
-        // Example: Fetch order number directly if you have a way to relate notifications to orders
         const [orderResult] = await pool.query(
-          "SELECT orderNumber FROM placing_orders WHERE email = ? AND id = ?",
+          "SELECT ordernumber FROM placing_orders WHERE email = ? AND id = ?",
           [email, notification.id] // Adjust if you have a way to map notification id to order id
         );
 
         return {
           ...notification,
-          orderNumber: orderResult.length ? orderResult[0].orderNumber : "N/A",
+          ordernumber: orderResult.length ? orderResult[0].ordernumber : "", // Set to an empty string if not found
         };
       })
     );
@@ -303,6 +313,8 @@ const validateInput = (req, res, next) => {
   next();
 };
 
+const saltRounds = 10;
+
 app.post("/api/register", validateInput, async (req, res) => {
   const {
     companyName,
@@ -316,12 +328,14 @@ app.post("/api/register", validateInput, async (req, res) => {
     phone,
     email,
     password,
-    country,  // Include country in the destructuring
+    country,
   } = req.body;
 
   const normalizedEmail = email.toLowerCase();
+  const adminEmail = req.user?.email || "unknown"; // Get admin email from request (adjust as needed)
 
   try {
+    // Check if email already exists
     const checkEmailQuery =
       "SELECT email FROM registration WHERE LOWER(email) = LOWER(?)";
     const [result] = await pool.query(checkEmailQuery, [normalizedEmail]);
@@ -331,6 +345,10 @@ app.post("/api/register", validateInput, async (req, res) => {
       return res.status(400).json({ error: "Email already exists" });
     }
 
+    // Hash the password using bcrypt
+    const hashedPassword = await bcrypt.hash(password, saltRounds);
+
+    // Insert user into the registration table
     const insertQuery = `
       INSERT INTO registration (
         companyName, title, firstName, secondName, address1, address2, city, zip, phone, email, password, country
@@ -347,7 +365,7 @@ app.post("/api/register", validateInput, async (req, res) => {
       zip,
       phone,
       normalizedEmail,
-      password,
+      hashedPassword, // Store the hashed password
       country,
     ];
 
@@ -361,9 +379,32 @@ app.post("/api/register", validateInput, async (req, res) => {
     const notificationMessage = `New user registered: ${normalizedEmail}, Country: ${country}`;
     await pool.query(notificationQuery, [notificationMessage, country]);
 
+    // Insert audit log
+    const auditLogQuery = `
+      INSERT INTO audit_logs (email, action, success, ip_address, timestamp) 
+      VALUES (?, ?, ?, ?, NOW())
+    `;
+    const action = `Registered new user: ${normalizedEmail}`;
+    const success = 1; // Success
+    const ipAddress = req.ip || "unknown"; // Adjust as needed
+
+    await pool.query(auditLogQuery, [email, action, success, ipAddress]);
+
     res.status(201).json({ message: "User registered successfully" });
   } catch (err) {
     console.error("Server error:", err);
+
+    // Insert audit log for failed registration
+    const auditLogQuery = `
+      INSERT INTO audit_logs (email, action, success, ip_address, timestamp) 
+      VALUES (?, ?, ?, ?, NOW())
+    `;
+    const action = `Failed to register new user: ${normalizedEmail}`;
+    const success = 0; // Failure
+    const ipAddress = req.ip || "unknown"; // Adjust as needed
+
+    await pool.query(auditLogQuery, [email, action, success, ipAddress]);
+
     res.status(500).json({ error: "Server error" });
   }
 });
@@ -391,52 +432,156 @@ app.get("/verify-email", (req, res) => {
   });
 });
 
-app.post("/login", (req, res) => {
-  const sql = "SELECT * FROM registration WHERE email = ? AND password = ?";
+app.post('/login', async (req, res) => {
+  const sql = "SELECT * FROM registration WHERE email = ?";
   const email = req.body.email;
   const password = req.body.password;
 
   console.log('Login attempt with email:', email);
 
-  pool.query(sql, [email, password])
-    .then(([users]) => {
-      if (users.length > 0) {
-        const user = users[0];
+  try {
+    // Query to get user details
+    const [users] = await pool.query(sql, [email]);
+
+    if (users.length > 0) {
+      const user = users[0];
+
+      // Check if the user is suspended
+      if (user.is_suspended) {
+        return res.status(403).json({ message: "Account suspended" });
+      }
+
+      // Compare the provided password with the hashed password stored in the database
+      const passwordMatch = await bcrypt.compare(password, user.password);
+
+      if (passwordMatch) {
         const isAdmin = user.role === "superadmin";
         const isMiniAdmin = user.role === "admin";
+        const isWarehouse = user.role === "warehouse";
+        const isFinance = user.role === "finance";
+        // Create JWT token
         const token = jwt.sign(
           { 
             email: user.email, 
             isAdmin: isAdmin, 
-            isMiniAdmin: isMiniAdmin, 
-            country: user.country, // Include country in the token
-           
+            isMiniAdmin: isMiniAdmin,
+            isWarehouse: isWarehouse, 
+            isFinance: isFinance,
+            country: user.country,
           }, 
           secretKey, 
-          { expiresIn: "1h" }
+          { expiresIn: "7d" }
         );
+
+        // Log successful login
+        await logAudit({
+          email,
+          action: "Login",
+          success: true
+        });
+
+        // Insert login record into logins table
+        const insertLoginSql = "INSERT INTO logins (user_id, login_time, email, status) VALUES (?, NOW(), ?, ?)";
+        await pool.query(insertLoginSql, [user.id, user.email, 'online']);
+        
 
         return res.json({
           message: "Login Successful",
           token,
           isAdmin: isAdmin,
           isMiniAdmin: isMiniAdmin,
+          isWarehouse: isWarehouse,
+          isFinance:isFinance,
           country: user.country // Include country in the response
         });
       } else {
         console.log('Login failed for email:', email);
-        return res.status(401).json({ message: "Login Failed" });
+
+        // Log failed login due to incorrect password
+        await logAudit({
+          email,
+          action: "Login",
+          success: false
+        });
+
+        return res.status(401).json({ message: "Login Failed: Incorrect Password" });
       }
-    })
-    .catch((err) => {
-      console.error("Error during login:", err);
-      return res.status(500).json({ message: "Internal Server Error" });
+    } else {
+      console.log('Login failed: Email not found', email);
+
+      // Log failed login due to email not found
+      await logAudit({
+        email,
+        action: "Login",
+        success: false
+      });
+
+      return res.status(401).json({ message: "Login Failed: Email Not Found" });
+    }
+  } catch (error) {
+    console.error("Error during login:", error);
+
+    // Log failed login due to error
+    await logAudit({
+      email,
+      action: "Login",
+      success: false
     });
+
+    return res.status(500).json({ message: "Internal Server Error" });
+  }
+});
+
+// server.js or appropriate route file
+
+app.post('/api/admin/suspend', async (req, res) => {
+  const { adminId, suspend } = req.body;
+
+  if (typeof suspend !== 'boolean') {
+    return res.status(400).json({ message: 'Invalid suspension status' });
+  }
+
+  try {
+    const sql = 'UPDATE registration SET is_suspended = ? WHERE id = ?';
+    await pool.query(sql, [suspend, adminId]);
+
+    return res.json({ message: 'Admin status updated successfully' });
+  } catch (error) {
+    console.error('Error updating admin status:', error);
+    return res.status(500).json({ message: 'Failed to update admin status' });
+  }
+});
+app.post('/api/suspenduser', async (req, res) => {
+  const { email, userId } = req.body;
+
+  try {
+    // Validate admin permissions
+    if (email !== 'superadmin@gmail.com') {
+      return res.status(403).json({ message: 'Unauthorized' });
+    }
+    
+
+    // Suspend the user in the database
+    await suspendUserById(userId);
+
+    res.status(200).json({ message: 'User suspended successfully' });
+  } catch (error) {
+    console.error('Error suspending user:', error);
+    res.status(500).json({ message: 'Failed to suspend user' });
+  }
 });
 
 
 
-
+function logAudit({ email, action, success }) {
+  const sql = `
+    INSERT INTO audit_logs (email, action, success, timestamp) 
+    VALUES (?, ?, ?, NOW())
+  `;
+  pool.query(sql, [email, action, success]).catch((err) => {
+    console.error("Error logging audit:", err);
+  });
+}
 
 app.post("/verifyToken", (req, res) => {
   const token = req.body.token;
@@ -448,7 +593,11 @@ app.post("/verifyToken", (req, res) => {
     if (err) {
       return res.status(401).json({ message: "Invalid token" });
     }
-    res.json({ email: decoded.email, isAdmin: decoded.isAdmin, country: decoded.country });
+    res.json({
+      email: decoded.email,
+      isAdmin: decoded.isAdmin,
+      country: decoded.country,
+    });
   });
 });
 
@@ -601,7 +750,7 @@ app.post("/api/order", async (req, res) => {
           item.description,
           item.partnumber,
           item.price,
-          item.quantity
+          item.quantity,
         ]
       );
     }
@@ -612,20 +761,21 @@ app.post("/api/order", async (req, res) => {
       VALUES (?, ?, NOW())
     `;
     const notificationMessage = `New order placed: Order Number: ${orderNumber}, Email: ${formData.email}, Country: ${formData.country}`;
-    await connection.query(notificationQuery, [notificationMessage, formData.country]);
+    await connection.query(notificationQuery, [
+      notificationMessage,
+      formData.country,
+    ]);
 
     await connection.commit();
-    res.json({ message: 'Order placed successfully' });
+    res.json({ message: "Order placed successfully" });
   } catch (error) {
     await connection.rollback();
-    console.error('Error processing order:', error);
-    res.status(500).json({ error: 'Error processing order' });
+    console.error("Error processing order:", error);
+    res.status(500).json({ error: "Error processing order" });
   } finally {
     connection.release();
   }
 });
-
-
 
 app.get("/api/orders", async (req, res) => {
   const userId = req.query.userId;
@@ -808,13 +958,18 @@ app.get("/api/products/partnumber/:partnumber", async (req, res) => {
 
 //////////////////////////////////////users////////////////////////////////////////////////
 
-
-
-
-
-
-
 /////////////////////////Admin//////////////////////////////////////////////
+const getAdminPermissions = async (userEmail) => {
+  const query = `
+    SELECT create_permission, update_permission,read_permission,delete_permission
+    FROM admin_rights
+    JOIN registration ON registration.id = admin_rights.user_id
+    WHERE registration.email = ?
+  `;
+  const [results] = await pool.query(query, [userEmail]);
+  return results[0];
+};
+
 app.get("/api/admin/orders/count", async (req, res) => {
   const adminEmail = req.query.email;
 
@@ -824,8 +979,11 @@ app.get("/api/admin/orders/count", async (req, res) => {
 
   try {
     // Fetch the admin's country and role from the registration table
-    const countryCodeQuery = "SELECT country, role FROM registration WHERE email = ?";
-    const [countryCodeResult] = await pool.query(countryCodeQuery, [adminEmail]);
+    const countryCodeQuery =
+      "SELECT country, role FROM registration WHERE email = ?";
+    const [countryCodeResult] = await pool.query(countryCodeQuery, [
+      adminEmail,
+    ]);
 
     if (countryCodeResult.length === 0) {
       return res.status(404).json({ error: "Admin not found" });
@@ -837,18 +995,48 @@ app.get("/api/admin/orders/count", async (req, res) => {
     let queryParams = [];
 
     // If the user is not a superadmin, filter by country
-    if (adminRole !== 'superadmin' && adminCountryCode !== 'SUPERADMIN') {
+    if (adminRole !== "superadmin" && adminCountryCode !== "SUPERADMIN") {
       orderCountQuery += " WHERE country = ?";
       queryParams.push(adminCountryCode);
     }
 
-    const [rows] = await pool.query(orderCountQuery, queryParams);
-    res.json({ count: rows[0].count });
+    // Fetch the current order count
+    const [currentRows] = await pool.query(orderCountQuery, queryParams);
+    const currentCount = currentRows[0].count;
+
+    // Declare previousOrderCountQuery as a let variable
+    let previousOrderCountQuery = `
+      SELECT COUNT(*) AS count
+      FROM placing_orders
+      WHERE created_at >= DATE_SUB(CURDATE(), INTERVAL 1 DAY)
+    `;
+
+    // Adjust the query for non-superadmin users
+    if (adminRole !== "superadmin" && adminCountryCode !== "SUPERADMIN") {
+      previousOrderCountQuery += " AND country = ?";
+      queryParams.push(adminCountryCode);
+    }
+
+    const [previousRows] = await pool.query(previousOrderCountQuery, queryParams);
+    const previousCount = previousRows[0].count;
+
+    // Calculate the percentage increase
+    const percentageIncrease =
+      previousCount > 0
+        ? ((currentCount - previousCount) / previousCount) * 100
+        : 0;
+
+    res.json({
+      count: currentCount,
+      percentageIncrease: percentageIncrease.toFixed(2),
+    });
   } catch (error) {
     console.error("Error fetching order count:", error);
     res.status(500).json({ error: "Error fetching order count" });
   }
 });
+
+
 
 app.get("/api/admin/products/count", async (req, res) => {
   try {
@@ -860,8 +1048,6 @@ app.get("/api/admin/products/count", async (req, res) => {
   }
 });
 
-
-
 app.get("/api/admin/users/count", async (req, res) => {
   const adminEmail = req.query.email;
 
@@ -871,8 +1057,11 @@ app.get("/api/admin/users/count", async (req, res) => {
 
   try {
     // Fetch the admin's country and role from the registration table
-    const countryCodeQuery = "SELECT country, role FROM registration WHERE email = ?";
-    const [countryCodeResult] = await pool.query(countryCodeQuery, [adminEmail]);
+    const countryCodeQuery =
+      "SELECT country, role FROM registration WHERE email = ?";
+    const [countryCodeResult] = await pool.query(countryCodeQuery, [
+      adminEmail,
+    ]);
 
     if (countryCodeResult.length === 0) {
       return res.status(404).json({ error: "Admin not found" });
@@ -884,7 +1073,7 @@ app.get("/api/admin/users/count", async (req, res) => {
     let queryParams = [];
 
     // If the user is not a superadmin, filter by country
-    if (adminRole !== 'superadmin' && adminCountryCode !== 'SUPERADMIN') {
+    if (adminRole !== "superadmin" && adminCountryCode !== "SUPERADMIN") {
       userCountQuery += " WHERE country = ?";
       queryParams.push(adminCountryCode);
     }
@@ -906,8 +1095,11 @@ app.get("/api/admin/orders/recent", async (req, res) => {
 
   try {
     // Fetch the admin's country and role from the registration table
-    const countryCodeQuery = "SELECT country, role FROM registration WHERE email = ?";
-    const [countryCodeResult] = await pool.query(countryCodeQuery, [adminEmail]);
+    const countryCodeQuery =
+      "SELECT country, role FROM registration WHERE email = ?";
+    const [countryCodeResult] = await pool.query(countryCodeQuery, [
+      adminEmail,
+    ]);
 
     if (countryCodeResult.length === 0) {
       return res.status(404).json({ error: "Admin not found" });
@@ -928,11 +1120,11 @@ app.get("/api/admin/orders/recent", async (req, res) => {
       LEFT JOIN registration r ON po.email = r.email
       WHERE po.created_at >= ?
     `;
-    
+
     let queryParams = [sevenDaysAgo];
 
     // If the user is not a superadmin, filter by country
-    if (adminRole !== 'superadmin' && adminCountryCode !== 'SUPERADMIN') {
+    if (adminRole !== "superadmin" && adminCountryCode !== "SUPERADMIN") {
       getOrdersQuery += " AND r.country = ?";
       queryParams.push(adminCountryCode);
     }
@@ -960,8 +1152,11 @@ app.get("/api/admin/orders/groupedByCountry", async (req, res) => {
   }
 
   try {
-    const countryCodeQuery = "SELECT country, role FROM registration WHERE email = ?";
-    const [countryCodeResult] = await pool.query(countryCodeQuery, [adminEmail]);
+    const countryCodeQuery =
+      "SELECT country, role FROM registration WHERE email = ?";
+    const [countryCodeResult] = await pool.query(countryCodeQuery, [
+      adminEmail,
+    ]);
 
     if (countryCodeResult.length === 0) {
       return res.status(404).json({ error: "Admin not found" });
@@ -974,10 +1169,10 @@ app.get("/api/admin/orders/groupedByCountry", async (req, res) => {
       FROM placing_orders po
       LEFT JOIN registration r ON po.email = r.email
     `;
-    
+
     let queryParams = [];
 
-    if (adminRole !== 'superadmin' && adminCountryCode !== 'SUPERADMIN') {
+    if (adminRole !== "superadmin" && adminCountryCode !== "SUPERADMIN") {
       getOrdersQuery += " WHERE r.country = ?";
       queryParams.push(adminCountryCode);
     }
@@ -1003,10 +1198,10 @@ app.get("/api/admin/orders/groupedByCountry", async (req, res) => {
   }
 });
 
-
-
 app.get("/api/admin/orders/pending", async (req, res) => {
   const adminEmail = req.query.email;
+  const startDate = req.query.startDate;
+  const endDate = req.query.endDate;
 
   if (!adminEmail) {
     return res.status(401).json({ error: "Unauthorized: No email provided" });
@@ -1014,17 +1209,17 @@ app.get("/api/admin/orders/pending", async (req, res) => {
 
   try {
     // Fetch the admin's country and role from the registration table
-    const countryCodeQuery = "SELECT country, role FROM registration WHERE email = ?";
-    const [countryCodeResult] = await pool.query(countryCodeQuery, [adminEmail]);
+    const countryCodeQuery =
+      "SELECT country, role FROM registration WHERE email = ?";
+    const [countryCodeResult] = await pool.query(countryCodeQuery, [
+      adminEmail,
+    ]);
 
     if (countryCodeResult.length === 0) {
       return res.status(404).json({ error: "Admin not found" });
     }
 
     const { country: adminCountryCode, role: adminRole } = countryCodeResult[0];
-
-    // Debugging: Log admin details
-    console.log(`Admin Email: ${adminEmail}, Country: ${adminCountryCode}, Role: ${adminRole}`);
 
     // Define the base query for fetching pending orders
     let getOrdersQuery = `
@@ -1034,20 +1229,28 @@ app.get("/api/admin/orders/pending", async (req, res) => {
       LEFT JOIN order_items oi ON placing_orders.id = oi.order_id
       WHERE placing_orders.status = 'Pending'
     `;
-    
+
     let queryParams = [];
 
     // If the user is not a superadmin, filter by country
-    if (adminRole !== 'superadmin' && adminCountryCode !== 'SUPERADMIN') {
+    if (adminRole !== "superadmin" && adminCountryCode !== "SUPERADMIN") {
       getOrdersQuery += " AND placing_orders.country = ?";
       queryParams.push(adminCountryCode);
     }
 
+    // Add date filtering
+    if (startDate) {
+      getOrdersQuery += " AND placing_orders.created_at >= ?";
+      queryParams.push(new Date(startDate));
+    }
+
+    if (endDate) {
+      getOrdersQuery += " AND placing_orders.created_at <= ?";
+      queryParams.push(new Date(endDate));
+    }
+
     // Group the results by order ID
     getOrdersQuery += " GROUP BY placing_orders.id";
-
-
-  
 
     const [orders] = await pool.query(getOrdersQuery, queryParams);
 
@@ -1070,6 +1273,8 @@ app.get("/api/admin/orders/pending", async (req, res) => {
 
 app.get("/api/admin/orders/approved", async (req, res) => {
   const adminEmail = req.query.email;
+  const startDate = req.query.startDate;
+  const endDate = req.query.endDate;
 
   if (!adminEmail) {
     return res.status(401).json({ error: "Unauthorized: No email provided" });
@@ -1077,17 +1282,17 @@ app.get("/api/admin/orders/approved", async (req, res) => {
 
   try {
     // Fetch the admin's country and role from the registration table
-    const countryCodeQuery = "SELECT country, role FROM registration WHERE email = ?";
-    const [countryCodeResult] = await pool.query(countryCodeQuery, [adminEmail]);
+    const countryCodeQuery =
+      "SELECT country, role FROM registration WHERE email = ?";
+    const [countryCodeResult] = await pool.query(countryCodeQuery, [
+      adminEmail,
+    ]);
 
     if (countryCodeResult.length === 0) {
       return res.status(404).json({ error: "Admin not found" });
     }
 
     const { country: adminCountryCode, role: adminRole } = countryCodeResult[0];
-
-    // Debugging: Log admin details
-    console.log(`Admin Email: ${adminEmail}, Country: ${adminCountryCode}, Role: ${adminRole}`);
 
     // Define the base query for fetching pending orders
     let getOrdersQuery = `
@@ -1097,20 +1302,28 @@ app.get("/api/admin/orders/approved", async (req, res) => {
       LEFT JOIN order_items oi ON placing_orders.id = oi.order_id
       WHERE placing_orders.status = 'Approved'
     `;
-    
+
     let queryParams = [];
 
     // If the user is not a superadmin, filter by country
-    if (adminRole !== 'superadmin' && adminCountryCode !== 'SUPERADMIN') {
+    if (adminRole !== "superadmin" && adminCountryCode !== "SUPERADMIN") {
       getOrdersQuery += " AND placing_orders.country = ?";
       queryParams.push(adminCountryCode);
     }
 
+    // Add date filtering
+    if (startDate) {
+      getOrdersQuery += " AND placing_orders.created_at >= ?";
+      queryParams.push(new Date(startDate));
+    }
+
+    if (endDate) {
+      getOrdersQuery += " AND placing_orders.created_at <= ?";
+      queryParams.push(new Date(endDate));
+    }
+
     // Group the results by order ID
     getOrdersQuery += " GROUP BY placing_orders.id";
-
-
-  
 
     const [orders] = await pool.query(getOrdersQuery, queryParams);
 
@@ -1130,6 +1343,7 @@ app.get("/api/admin/orders/approved", async (req, res) => {
     res.status(500).json({ error: "Error fetching pending orders" });
   }
 });
+
 app.get("/api/admin/orders/cancelled", async (req, res) => {
   const adminEmail = req.query.email;
 
@@ -1139,8 +1353,11 @@ app.get("/api/admin/orders/cancelled", async (req, res) => {
 
   try {
     // Fetch the admin's country and role from the registration table
-    const countryCodeQuery = "SELECT country, role FROM registration WHERE email = ?";
-    const [countryCodeResult] = await pool.query(countryCodeQuery, [adminEmail]);
+    const countryCodeQuery =
+      "SELECT country, role FROM registration WHERE email = ?";
+    const [countryCodeResult] = await pool.query(countryCodeQuery, [
+      adminEmail,
+    ]);
 
     if (countryCodeResult.length === 0) {
       return res.status(404).json({ error: "Admin not found" });
@@ -1149,7 +1366,9 @@ app.get("/api/admin/orders/cancelled", async (req, res) => {
     const { country: adminCountryCode, role: adminRole } = countryCodeResult[0];
 
     // Debugging: Log admin details
-    console.log(`Admin Email: ${adminEmail}, Country: ${adminCountryCode}, Role: ${adminRole}`);
+    console.log(
+      `Admin Email: ${adminEmail}, Country: ${adminCountryCode}, Role: ${adminRole}`
+    );
 
     // Define the base query for fetching pending orders
     let getOrdersQuery = `
@@ -1159,20 +1378,17 @@ app.get("/api/admin/orders/cancelled", async (req, res) => {
       LEFT JOIN order_items oi ON placing_orders.id = oi.order_id
       WHERE placing_orders.status = 'Cancelled'
     `;
-    
+
     let queryParams = [];
 
     // If the user is not a superadmin, filter by country
-    if (adminRole !== 'superadmin' && adminCountryCode !== 'SUPERADMIN') {
+    if (adminRole !== "superadmin" && adminCountryCode !== "SUPERADMIN") {
       getOrdersQuery += " AND placing_orders.country = ?";
       queryParams.push(adminCountryCode);
     }
 
     // Group the results by order ID
     getOrdersQuery += " GROUP BY placing_orders.id";
-
-
-  
 
     const [orders] = await pool.query(getOrdersQuery, queryParams);
 
@@ -1194,6 +1410,9 @@ app.get("/api/admin/orders/cancelled", async (req, res) => {
 });
 app.get("/api/admin/orders/orders", async (req, res) => {
   const adminEmail = req.query.email;
+  const startDate = req.query.startDate;
+  const endDate = req.query.endDate;
+  const selectedCountry = req.query.country;
 
   if (!adminEmail) {
     return res.status(401).json({ error: "Unauthorized: No email provided" });
@@ -1201,17 +1420,17 @@ app.get("/api/admin/orders/orders", async (req, res) => {
 
   try {
     // Fetch the admin's country and role from the registration table
-    const countryCodeQuery = "SELECT country, role FROM registration WHERE email = ?";
-    const [countryCodeResult] = await pool.query(countryCodeQuery, [adminEmail]);
+    const countryCodeQuery =
+      "SELECT country, role FROM registration WHERE email = ?";
+    const [countryCodeResult] = await pool.query(countryCodeQuery, [
+      adminEmail,
+    ]);
 
     if (countryCodeResult.length === 0) {
       return res.status(404).json({ error: "Admin not found" });
     }
 
     const { country: adminCountryCode, role: adminRole } = countryCodeResult[0];
-
-    // Debugging: Log admin details
-    console.log(`Admin Email: ${adminEmail}, Country: ${adminCountryCode}, Role: ${adminRole}`);
 
     // Define the base query for fetching orders
     let getOrdersQuery = `
@@ -1221,19 +1440,42 @@ app.get("/api/admin/orders/orders", async (req, res) => {
       FROM placing_orders
       LEFT JOIN order_items oi ON placing_orders.id = oi.order_id
     `;
-    
+
     let queryParams = [];
 
-    // If the user is not a superadmin, filter by country
-    if (adminRole !== 'superadmin' && adminCountryCode !== 'SUPERADMIN') {
-      getOrdersQuery += " WHERE placing_orders.country = ?";
-      queryParams.push(adminCountryCode);
+    // Filter by country based on the admin's role and selected country
+    if (adminRole === "superadmin") {
+      // Superadmins can see orders from any country
+      if (selectedCountry) {
+        getOrdersQuery += " WHERE placing_orders.country = ?";
+        queryParams.push(selectedCountry);
+      }
+    } else if (adminRole === "admin" || adminRole === "warehouse") {
+      // Admins and warehouse admins see orders only for their assigned country
+      if (selectedCountry) {
+        getOrdersQuery += " WHERE placing_orders.country = ?";
+        queryParams.push(selectedCountry);
+      } else {
+        getOrdersQuery += " WHERE placing_orders.country = ?";
+        queryParams.push(adminCountryCode);
+      }
+    }
+
+    // Add date filtering
+    if (startDate) {
+      getOrdersQuery += queryParams.length ? " AND" : " WHERE";
+      getOrdersQuery += " placing_orders.created_at >= ?";
+      queryParams.push(new Date(startDate));
+    }
+
+    if (endDate) {
+      getOrdersQuery += queryParams.length ? " AND" : " WHERE";
+      getOrdersQuery += " placing_orders.created_at <= ?";
+      queryParams.push(new Date(endDate));
     }
 
     // Group the results by order ID
     getOrdersQuery += " GROUP BY placing_orders.id";
-
-    // Debugging: Log final query and parameters
 
     const [orders] = await pool.query(getOrdersQuery, queryParams);
 
@@ -1253,10 +1495,952 @@ app.get("/api/admin/orders/orders", async (req, res) => {
     res.status(500).json({ error: "Error fetching orders" });
   }
 });
+app.get("/api/admin/orders/country-counts", async (req, res) => {
+  const adminEmail = req.query.email;
+  const startDate = req.query.startDate;
+  const endDate = req.query.endDate;
+  const selectedCountry = req.query.country;
+  const timePeriod = req.query.timePeriod; // new parameter for time period
+  const filterType = req.query.filterType; // new parameter for filter type
+
+  if (!adminEmail) {
+    return res.status(401).json({ error: "Unauthorized: No email provided" });
+  }
+
+  try {
+    // Fetch the admin's country and role from the registration table
+    const countryCodeQuery =
+      "SELECT country, role FROM registration WHERE email = ?";
+    const [countryCodeResult] = await pool.query(countryCodeQuery, [
+      adminEmail,
+    ]);
+
+    if (countryCodeResult.length === 0) {
+      return res.status(404).json({ error: "Admin not found" });
+    }
+
+    const { country: adminCountryCode, role: adminRole } = countryCodeResult[0];
+
+    // Define the base query for fetching order counts by country
+    let getOrderCountsByCountryQuery = `
+      SELECT placing_orders.country, COUNT(*) as orderCount
+      FROM placing_orders
+    `;
+
+    let queryParams = [];
+
+    // Filter by country based on the admin's role and selected country
+    if (adminRole === "superadmin") {
+      // Superadmins can see orders from any country
+      if (selectedCountry) {
+        getOrderCountsByCountryQuery += " WHERE placing_orders.country = ?";
+        queryParams.push(selectedCountry);
+      }
+    } else if (adminRole === "admin" || adminRole === "warehouse") {
+      // Admins and warehouse admins see orders only for their assigned country
+      if (selectedCountry) {
+        getOrderCountsByCountryQuery += " WHERE placing_orders.country = ?";
+        queryParams.push(selectedCountry);
+      } else {
+        getOrderCountsByCountryQuery += " WHERE placing_orders.country = ?";
+        queryParams.push(adminCountryCode);
+      }
+    }
+
+    // Add filtering based on the selected filter type and time period
+    if (filterType === "custom" && startDate && endDate) {
+      getOrderCountsByCountryQuery += queryParams.length ? " AND" : " WHERE";
+      getOrderCountsByCountryQuery +=
+        " placing_orders.created_at >= ? AND placing_orders.created_at <= ?";
+      queryParams.push(new Date(startDate), new Date(endDate));
+    } else if (filterType === "monthly") {
+      const endOfMonth = new Date();
+      const startOfMonth = new Date();
+      startOfMonth.setMonth(endOfMonth.getMonth() - 3);
+      startOfMonth.setDate(1);
+      getOrderCountsByCountryQuery += queryParams.length ? " AND" : " WHERE";
+      getOrderCountsByCountryQuery +=
+        " placing_orders.created_at >= ? AND placing_orders.created_at <= ?";
+      queryParams.push(startOfMonth, endOfMonth);
+    } else if (filterType === "weekly") {
+      const endOfWeek = new Date();
+      const startOfWeek = new Date();
+      startOfWeek.setDate(endOfWeek.getDate() - 21); // Last 3 weeks
+      getOrderCountsByCountryQuery += queryParams.length ? " AND" : " WHERE";
+      getOrderCountsByCountryQuery +=
+        " placing_orders.created_at >= ? AND placing_orders.created_at <= ?";
+      queryParams.push(startOfWeek, endOfWeek);
+    } else {
+      // Handle custom time period filtering
+      if (timePeriod === "weekly") {
+        const startOfWeek = new Date();
+        startOfWeek.setDate(startOfWeek.getDate() - startOfWeek.getDay());
+        getOrderCountsByCountryQuery += queryParams.length ? " AND" : " WHERE";
+        getOrderCountsByCountryQuery += " placing_orders.created_at >= ?";
+        queryParams.push(startOfWeek.toISOString());
+      } else if (timePeriod === "monthly") {
+        const startOfMonth = new Date();
+        startOfMonth.setDate(1);
+        getOrderCountsByCountryQuery += queryParams.length ? " AND" : " WHERE";
+        getOrderCountsByCountryQuery += " placing_orders.created_at >= ?";
+        queryParams.push(startOfMonth.toISOString());
+      } else {
+        if (startDate) {
+          getOrderCountsByCountryQuery += queryParams.length
+            ? " AND"
+            : " WHERE";
+          getOrderCountsByCountryQuery += " placing_orders.created_at >= ?";
+          queryParams.push(new Date(startDate).toISOString());
+        }
+
+        if (endDate) {
+          getOrderCountsByCountryQuery += queryParams.length
+            ? " AND"
+            : " WHERE";
+          getOrderCountsByCountryQuery += " placing_orders.created_at <= ?";
+          queryParams.push(new Date(endDate).toISOString());
+        }
+      }
+    }
+
+    // Group the results by country
+    getOrderCountsByCountryQuery += " GROUP BY placing_orders.country";
+
+    const [orderCountsByCountry] = await pool.query(
+      getOrderCountsByCountryQuery,
+      queryParams
+    );
+
+    if (orderCountsByCountry.length === 0) {
+      return res.status(404).json({ message: "No orders found" });
+    }
+
+    res.status(200).json(orderCountsByCountry);
+  } catch (error) {
+    console.error("Error fetching order counts by country:", error);
+    res.status(500).json({ error: "Error fetching order counts by country" });
+  }
+});
+
+app.get("/api/admin/orders/city-counts", async (req, res) => {
+  const adminEmail = req.query.email;
+  const startDate = req.query.startDate;
+  const endDate = req.query.endDate;
+  const selectedCountry = req.query.country;
+  const timePeriod = req.query.timePeriod; // new parameter for time period
+
+  if (!adminEmail) {
+    return res.status(401).json({ error: "Unauthorized: No email provided" });
+  }
+
+  try {
+    // Fetch the admin's country and role from the registration table
+    const countryCodeQuery =
+      "SELECT country, role FROM registration WHERE email = ?";
+    const [countryCodeResult] = await pool.query(countryCodeQuery, [
+      adminEmail,
+    ]);
+
+    if (countryCodeResult.length === 0) {
+      return res.status(404).json({ error: "Admin not found" });
+    }
+
+    const { country: adminCountryCode, role: adminRole } = countryCodeResult[0];
+
+    // Define the base query for fetching order counts by country
+    let getOrderCountsByCountryQuery = `
+      SELECT placing_orders.country, COUNT(*) as orderCount
+      FROM placing_orders
+    `;
+
+    let queryParams = [];
+
+    // Filter by country based on the admin's role and selected country
+    if (adminRole === "superadmin") {
+      // Superadmins can see orders from any country
+      if (selectedCountry) {
+        getOrderCountsByCountryQuery += " WHERE placing_orders.country = ?";
+        queryParams.push(selectedCountry);
+      }
+    } else if (adminRole === "admin" || adminRole === "warehouse") {
+      // Admins and warehouse admins see orders only for their assigned country
+      if (selectedCountry) {
+        getOrderCountsByCountryQuery += " WHERE placing_orders.city = ?";
+        queryParams.push(selectedCountry);
+      } else {
+        getOrderCountsByCountryQuery += " WHERE placing_orders.city = ?";
+        queryParams.push(adminCountryCode);
+      }
+    }
+
+    // Add date filtering based on the selected time period
+    if (timePeriod === "weekly") {
+      const startOfWeek = new Date();
+      startOfWeek.setDate(startOfWeek.getDate() - startOfWeek.getDay());
+      getOrderCountsByCountryQuery += queryParams.length ? " AND" : " WHERE";
+      getOrderCountsByCountryQuery += " placing_orders.created_at >= ?";
+      queryParams.push(startOfWeek.toISOString());
+    } else if (timePeriod === "monthly") {
+      const startOfMonth = new Date();
+      startOfMonth.setDate(1);
+      getOrderCountsByCountryQuery += queryParams.length ? " AND" : " WHERE";
+      getOrderCountsByCountryQuery += " placing_orders.created_at >= ?";
+      queryParams.push(startOfMonth.toISOString());
+    } else {
+      // Handle custom date range if provided
+      if (startDate) {
+        getOrderCountsByCountryQuery += queryParams.length ? " AND" : " WHERE";
+        getOrderCountsByCountryQuery += " placing_orders.created_at >= ?";
+        queryParams.push(new Date(startDate).toISOString());
+      }
+
+      if (endDate) {
+        getOrderCountsByCountryQuery += queryParams.length ? " AND" : " WHERE";
+        getOrderCountsByCountryQuery += " placing_orders.created_at <= ?";
+        queryParams.push(new Date(endDate).toISOString());
+      }
+    }
+
+    // Group the results by country
+    getOrderCountsByCountryQuery += " GROUP BY placing_orders.country";
+
+    const [orderCountsByCountry] = await pool.query(
+      getOrderCountsByCountryQuery,
+      queryParams
+    );
+
+    if (orderCountsByCountry.length === 0) {
+      return res.status(404).json({ message: "No orders found" });
+    }
+
+    res.status(200).json(orderCountsByCountry);
+  } catch (error) {
+    console.error("Error fetching order counts by country:", error);
+    res.status(500).json({ error: "Error fetching order counts by country" });
+  }
+});
+app.get("/api/admin/orders/sales-by-country", async (req, res) => {
+  const adminEmail = req.query.email;
+  const filterType = req.query.filterType;
+  const startDate = req.query.startDate;
+  const endDate = req.query.endDate;
+
+  if (!adminEmail) {
+    return res.status(401).json({ error: "Unauthorized: No email provided" });
+  }
+
+  try {
+    // Fetch the admin's country and role from the registration table
+    const countryCodeQuery =
+      "SELECT country, role FROM registration WHERE email = ?";
+    const [countryCodeResult] = await pool.query(countryCodeQuery, [
+      adminEmail,
+    ]);
+
+    if (countryCodeResult.length === 0) {
+      return res.status(404).json({ error: "Admin not found" });
+    }
+
+    const { country: adminCountryCode, role: adminRole } = countryCodeResult[0];
+
+    // Define the base query for fetching orders
+    let getOrdersQuery = `
+      SELECT country, SUM(totalprice) as total_sales
+      FROM placing_orders
+    `;
+
+    let queryParams = [];
+
+    if (filterType === "custom" && startDate && endDate) {
+      getOrdersQuery += " WHERE created_at >= ? AND created_at <= ?";
+      queryParams.push(new Date(startDate), new Date(endDate));
+    } else if (filterType === "monthly") {
+      // Filter by the last 3 months
+      const endOfMonth = new Date();
+      const startOfMonth = new Date();
+      startOfMonth.setMonth(endOfMonth.getMonth() - 3);
+      startOfMonth.setDate(1);
+      getOrdersQuery += " WHERE created_at >= ? AND created_at <= ?";
+      queryParams.push(startOfMonth, endOfMonth);
+    } else if (filterType === "weekly") {
+      // Filter by the last 3 weeks
+      const endOfWeek = new Date();
+      const startOfWeek = new Date();
+      startOfWeek.setDate(endOfWeek.getDate() - 21); // Last 3 weeks
+      getOrdersQuery += " WHERE created_at >= ? AND created_at <= ?";
+      queryParams.push(startOfWeek, endOfWeek);
+    }
+
+    // Filter by country based on the admin's role
+    if (adminRole !== "superadmin") {
+      getOrdersQuery += " AND country = ?";
+      queryParams.push(adminCountryCode);
+    }
+
+    // Group the results by country and sum total sales
+    getOrdersQuery += " GROUP BY country ORDER BY country";
+
+    const [orders] = await pool.query(getOrdersQuery, queryParams);
+
+    if (orders.length === 0) {
+      return res.status(404).json({ message: "No orders found" });
+    }
+
+    res.status(200).json(orders);
+  } catch (error) {
+    console.error("Error fetching orders:", error);
+    res.status(500).json({ error: "Error fetching orders" });
+  }
+});
+app.get("/api/admin/orders/sales-by-city", async (req, res) => {
+  const adminEmail = req.query.email;
+  const filterType = req.query.filterType;
+  const startDate = req.query.startDate;
+  const endDate = req.query.endDate;
+
+  if (!adminEmail) {
+    return res.status(401).json({ error: "Unauthorized: No email provided" });
+  }
+
+  try {
+    // Fetch the admin's role and (optionally) city from the registration table
+    const adminQuery =
+      "SELECT country, city, role FROM registration WHERE email = ?";
+    const [adminResult] = await pool.query(adminQuery, [adminEmail]);
+
+    if (adminResult.length === 0) {
+      return res.status(404).json({ error: "Admin not found" });
+    }
+
+    const {
+      country: adminCountryCode,
+      city: adminCity,
+      role: adminRole,
+    } = adminResult[0];
+
+    // Define the base query for fetching orders
+    let getOrdersQuery = `
+      SELECT city, SUM(totalprice) as total_sales
+      FROM placing_orders
+    `;
+
+    let queryParams = [];
+
+    if (filterType === "custom" && startDate && endDate) {
+      getOrdersQuery += " WHERE created_at >= ? AND created_at <= ?";
+      queryParams.push(new Date(startDate), new Date(endDate));
+    } else if (filterType === "monthly") {
+      // Filter by the last 3 months
+      const endOfMonth = new Date();
+      const startOfMonth = new Date();
+      startOfMonth.setMonth(endOfMonth.getMonth() - 3);
+      startOfMonth.setDate(1);
+      getOrdersQuery += " WHERE created_at >= ? AND created_at <= ?";
+      queryParams.push(startOfMonth, endOfMonth);
+    } else if (filterType === "weekly") {
+      // Filter by the last 3 weeks
+      const endOfWeek = new Date();
+      const startOfWeek = new Date();
+      startOfWeek.setDate(endOfWeek.getDate() - 21); // Last 3 weeks
+      getOrdersQuery += " WHERE created_at >= ? AND created_at <= ?";
+      queryParams.push(startOfWeek, endOfWeek);
+    } else {
+      // If no valid filter type, return an error
+      return res.status(400).json({ error: "Invalid filterType provided" });
+    }
+
+    // Filter by city based on the admin's role
+    if (adminRole !== "superadmin") {
+      if (adminRole === "cityadmin" && adminCity) {
+        getOrdersQuery += " AND city = ?";
+        queryParams.push(adminCity);
+      } else if (adminRole === "countryadmin") {
+        getOrdersQuery += " AND country = ?";
+        queryParams.push(adminCountryCode);
+      }
+    }
+
+    // Group the results by city and sum total sales
+    getOrdersQuery += " GROUP BY city ORDER BY city";
+
+    const [orders] = await pool.query(getOrdersQuery, queryParams);
+
+    if (orders.length === 0) {
+      return res.status(404).json({ message: "No orders found" });
+    }
+
+    res.status(200).json(orders);
+  } catch (error) {
+    console.error("Error fetching orders:", error);
+    res.status(500).json({ error: "Error fetching orders" });
+  }
+});
+
+app.get("/api/admin/orders/orders-by-country", async (req, res) => {
+  const adminEmail = req.query.email;
+  const filterType = req.query.filterType;
+  const startDate = req.query.startDate;
+  const endDate = req.query.endDate;
+
+  if (!adminEmail) {
+    return res.status(401).json({ error: "Unauthorized: No email provided" });
+  }
+
+  try {
+    // Fetch the admin's country and role from the registration table
+    const countryCodeQuery =
+      "SELECT country, role FROM registration WHERE email = ?";
+    const [countryCodeResult] = await pool.query(countryCodeQuery, [
+      adminEmail,
+    ]);
+
+    if (countryCodeResult.length === 0) {
+      return res.status(404).json({ error: "Admin not found" });
+    }
+
+    const { country: adminCountryCode, role: adminRole } = countryCodeResult[0];
+
+    // Define the base query for fetching orders
+    let getOrdersQuery = `
+      SELECT country, SUM(ordernumber) as total_orders
+      FROM placing_orders
+    `;
+
+    let queryParams = [];
+
+    if (filterType === "custom" && startDate && endDate) {
+      getOrdersQuery += " WHERE created_at >= ? AND created_at <= ?";
+      queryParams.push(new Date(startDate), new Date(endDate));
+    } else if (filterType === "monthly") {
+      // Filter by the last 3 months
+      const endOfMonth = new Date();
+      const startOfMonth = new Date();
+      startOfMonth.setMonth(endOfMonth.getMonth() - 3);
+      startOfMonth.setDate(1);
+      getOrdersQuery += " WHERE created_at >= ? AND created_at <= ?";
+      queryParams.push(startOfMonth, endOfMonth);
+    } else if (filterType === "weekly") {
+      // Filter by the last 3 weeks
+      const endOfWeek = new Date();
+      const startOfWeek = new Date();
+      startOfWeek.setDate(endOfWeek.getDate() - 21); // Last 3 weeks
+      getOrdersQuery += " WHERE created_at >= ? AND created_at <= ?";
+      queryParams.push(startOfWeek, endOfWeek);
+    }
+
+    // Filter by country based on the admin's role
+    if (adminRole !== "superadmin") {
+      getOrdersQuery += " AND country = ?";
+      queryParams.push(adminCountryCode);
+    }
+
+    // Group the results by country and sum total sales
+    getOrdersQuery += " GROUP BY country ORDER BY country";
+
+    const [orders] = await pool.query(getOrdersQuery, queryParams);
+
+    if (orders.length === 0) {
+      return res.status(404).json({ message: "No orders found" });
+    }
+
+    res.status(200).json(orders);
+  } catch (error) {
+    console.error("Error fetching orders:", error);
+    res.status(500).json({ error: "Error fetching orders" });
+  }
+});
+app.get("/api/admin/orders/orders-by-city", async (req, res) => {
+  const adminEmail = req.query.email;
+  const filterType = req.query.filterType;
+  const startDate = req.query.startDate;
+  const endDate = req.query.endDate;
+
+  if (!adminEmail) {
+    return res.status(401).json({ error: "Unauthorized: No email provided" });
+  }
+
+  try {
+    // Fetch the admin's role and (optionally) city from the registration table
+    const adminQuery = "SELECT country, role FROM registration WHERE email = ?";
+    const [adminResult] = await pool.query(adminQuery, [adminEmail]);
+
+    if (adminResult.length === 0) {
+      return res.status(404).json({ error: "Admin not found" });
+    }
+
+    const {
+      country: adminCountryCode,
+      city: adminCity,
+      role: adminRole,
+    } = adminResult[0];
+
+    // Define the base query for fetching orders
+    let getOrdersQuery = `
+      SELECT city, COUNT(*) AS total_orders
+      FROM placing_orders
+    `;
+
+    let queryParams = [];
+
+    // Add conditions for date filtering
+    let conditions = [];
+
+    if (filterType === "custom" && startDate && endDate) {
+      conditions.push("created_at >= ? AND created_at <= ?");
+      queryParams.push(new Date(startDate), new Date(endDate));
+    } else if (filterType === "monthly") {
+      const endOfMonth = new Date();
+      const startOfMonth = new Date();
+      startOfMonth.setMonth(endOfMonth.getMonth() - 3);
+      startOfMonth.setDate(1);
+      conditions.push("created_at >= ? AND created_at <= ?");
+      queryParams.push(startOfMonth, endOfMonth);
+    } else if (filterType === "weekly") {
+      const endOfWeek = new Date();
+      const startOfWeek = new Date();
+      startOfWeek.setDate(endOfWeek.getDate() - 21); // Last 3 weeks
+      conditions.push("created_at >= ? AND created_at <= ?");
+      queryParams.push(startOfWeek, endOfWeek);
+    } else {
+      return res.status(400).json({ error: "Invalid filterType provided" });
+    }
+
+    // Add conditions for city or country filtering based on admin role
+    if (adminRole !== "superadmin") {
+      if (adminRole === "cityadmin" && adminCity) {
+        conditions.push("city = ?");
+        queryParams.push(adminCity);
+      } else if (adminRole === "countryadmin") {
+        conditions.push("country = ?");
+        queryParams.push(adminCountryCode);
+      }
+    }
+
+    // Join all conditions with "AND" and append them to the query
+    if (conditions.length > 0) {
+      getOrdersQuery += " WHERE " + conditions.join(" AND ");
+    }
+
+    // Group the results by city and order by city name
+    getOrdersQuery += " GROUP BY city ORDER BY city";
+
+    const [orders] = await pool.query(getOrdersQuery, queryParams);
+
+    if (orders.length === 0) {
+      return res.status(404).json({ message: "No orders found" });
+    }
+
+    res.status(200).json(orders);
+  } catch (error) {
+    console.error("Error fetching orders:", error);
+    res.status(500).json({ error: "Error fetching orders" });
+  }
+});
 
 
 
+app.get("/api/admin/orders/company-orders-count", async (req, res) => {
+  const adminEmail = req.query.email;
 
+  if (!adminEmail) {
+    return res.status(401).json({ error: "Unauthorized: No email provided" });
+  }
+
+  try {
+    // Fetch the admin's role from the registration table
+    const roleQuery = "SELECT role FROM registration WHERE email = ?";
+    const [roleResult] = await pool.query(roleQuery, [adminEmail]);
+
+    if (roleResult.length === 0) {
+      return res.status(404).json({ error: "Admin not found" });
+    }
+
+    const { role: adminRole } = roleResult[0];
+
+    // Define the query to count orders and sum sales by company name
+    let getCompanyOrdersCountQuery = `
+      SELECT company_name, SUM(totalprice) as total_sales, COUNT(*) as order_count
+      FROM placing_orders
+    `;
+
+    let queryParams = [];
+
+    // If the admin is not a superadmin, restrict to their country
+    if (adminRole !== "superadmin") {
+      const countryQuery = "SELECT country FROM registration WHERE email = ?";
+      const [countryResult] = await pool.query(countryQuery, [adminEmail]);
+
+      if (countryResult.length === 0) {
+        return res.status(404).json({ error: "Country not found for admin" });
+      }
+
+      const { country: adminCountry } = countryResult[0];
+
+      getCompanyOrdersCountQuery += " WHERE placing_orders.country = ?";
+      queryParams.push(adminCountry);
+    }
+
+    // Complete the query
+    getCompanyOrdersCountQuery +=
+      " GROUP BY company_name ORDER BY order_count DESC";
+
+    const [companyOrdersCount] = await pool.query(
+      getCompanyOrdersCountQuery,
+      queryParams
+    );
+
+    if (companyOrdersCount.length === 0) {
+      return res.status(404).json({ message: "No orders found" });
+    }
+
+    res.status(200).json(companyOrdersCount);
+  } catch (error) {
+    console.error("Error fetching company orders count:", error);
+    res.status(500).json({ error: "Error fetching company orders count" });
+  }
+});
+app.get("/api/admin/orders/company-orders-count-chart", async (req, res) => {
+  const adminEmail = req.query.email;
+
+  if (!adminEmail) {
+    return res.status(401).json({ error: "Unauthorized: No email provided" });
+  }
+
+  try {
+    // Fetch the admin's role from the registration table
+    const roleQuery = "SELECT role FROM registration WHERE email = ?";
+    const [roleResult] = await pool.query(roleQuery, [adminEmail]);
+
+    if (roleResult.length === 0) {
+      return res.status(404).json({ error: "Admin not found" });
+    }
+
+    const { role: adminRole } = roleResult[0];
+
+    // Define the query to count orders and sum sales by company name, year, and month
+    let getCompanyOrdersCountQuery = `
+      SELECT company_name,
+             YEAR(created_at) AS year,
+             MONTH(created_at) AS month,
+             SUM(totalprice) AS total_sales,
+             COUNT(*) AS order_count
+      FROM placing_orders
+      WHERE created_at >= DATE_SUB(CURDATE(), INTERVAL 4 MONTH)
+    `;
+
+    let queryParams = [];
+
+    // If the admin is not a superadmin, restrict to their country
+    if (adminRole !== "superadmin") {
+      const countryQuery = "SELECT country FROM registration WHERE email = ?";
+      const [countryResult] = await pool.query(countryQuery, [adminEmail]);
+
+      if (countryResult.length === 0) {
+        return res.status(404).json({ error: "Country not found for admin" });
+      }
+
+      const { country: adminCountry } = countryResult[0];
+
+      getCompanyOrdersCountQuery += " AND placing_orders.country = ?";
+      queryParams.push(adminCountry);
+    }
+
+    // Complete the query
+    getCompanyOrdersCountQuery += `
+      GROUP BY company_name, YEAR(created_at), MONTH(created_at)
+      ORDER BY YEAR(created_at) ASC, MONTH(created_at) ASC, company_name ASC
+    `;
+
+    const [companyOrdersCount] = await pool.query(
+      getCompanyOrdersCountQuery,
+      queryParams
+    );
+
+    if (companyOrdersCount.length === 0) {
+      return res.status(404).json({ message: "No orders found" });
+    }
+
+    res.status(200).json(companyOrdersCount);
+  } catch (error) {
+    console.error("Error fetching company orders count:", error);
+    res.status(500).json({ error: "Error fetching company orders count" });
+  }
+});
+
+app.get("/api/admin/orders/sales-by-country-comparison", async (req, res) => {
+  const adminEmail = req.query.email;
+  const filterType = req.query.filterType;
+  const startDate = req.query.startDate;
+  const endDate = req.query.endDate;
+
+  if (!adminEmail) {
+    return res.status(401).json({ error: "Unauthorized: No email provided" });
+  }
+
+  try {
+    // Fetch the admin's country and role from the registration table
+    const countryCodeQuery =
+      "SELECT country, role FROM registration WHERE email = ?";
+    const [countryCodeResult] = await pool.query(countryCodeQuery, [
+      adminEmail,
+    ]);
+
+    if (countryCodeResult.length === 0) {
+      return res.status(404).json({ error: "Admin not found" });
+    }
+
+    const { country: adminCountryCode, role: adminRole } = countryCodeResult[0];
+
+    // Define the base query for fetching orders
+    let getOrdersQuery = `
+      SELECT DATE_FORMAT(created_at, '%Y-%m') as month, country, SUM(totalprice) as total_sales
+      FROM placing_orders
+    `;
+
+    let queryParams = [];
+
+    if (filterType === "custom" && startDate && endDate) {
+      getOrdersQuery += " WHERE created_at >= ? AND created_at <= ?";
+      queryParams.push(new Date(startDate), new Date(endDate));
+    } else if (filterType === "monthly") {
+      // Filter by current month
+      const startOfMonth = new Date();
+      startOfMonth.setDate(1);
+      const endOfMonth = new Date();
+      endOfMonth.setMonth(endOfMonth.getMonth() + 1);
+      endOfMonth.setDate(0);
+      getOrdersQuery += " WHERE created_at >= ? AND created_at <= ?";
+      queryParams.push(startOfMonth, endOfMonth);
+    } else if (filterType === "weekly") {
+      // Filter by current week
+      const startOfWeek = new Date();
+      startOfWeek.setDate(startOfWeek.getDate() - startOfWeek.getDay());
+      const endOfWeek = new Date();
+      endOfWeek.setDate(endOfWeek.getDate() + (6 - endOfWeek.getDay()));
+      getOrdersQuery += " WHERE created_at >= ? AND created_at <= ?";
+      queryParams.push(startOfWeek, endOfWeek);
+    }
+
+    // Filter by country based on the admin's role
+    if (adminRole !== "superadmin") {
+      getOrdersQuery += " AND country = ?";
+      queryParams.push(adminCountryCode);
+    }
+
+    // Group the results by month and country
+    getOrdersQuery += " GROUP BY month, country ORDER BY month, country";
+
+    const [orders] = await pool.query(getOrdersQuery, queryParams);
+
+    if (orders.length === 0) {
+      return res.status(404).json({ message: "No orders found" });
+    }
+
+    res.status(200).json(orders);
+  } catch (error) {
+    console.error("Error fetching orders:", error);
+    res.status(500).json({ error: "Error fetching orders" });
+  }
+});
+
+app.get("/api/admin/orders-per-month", async (req, res) => {
+  const adminEmail = req.query.email;
+
+  if (!adminEmail) {
+    return res.status(401).json({ error: "Unauthorized: No email provided" });
+  }
+
+  try {
+    const countryCodeQuery =
+      "SELECT country, role FROM registration WHERE email = ?";
+    const [countryCodeResult] = await pool.query(countryCodeQuery, [
+      adminEmail,
+    ]);
+
+    if (countryCodeResult.length === 0) {
+      return res.status(404).json({ error: "Admin not found" });
+    }
+
+    const { country: adminCountryCode, role: adminRole } = countryCodeResult[0];
+    let getOrdersPerMonthQuery = `
+      SELECT DATE_FORMAT(placing_orders.created_at, '%Y-%m') as month, COUNT(*) as orderCount
+      FROM placing_orders
+    `;
+
+    let queryParams = [];
+
+    // Filter by country based on the admin's role
+    if (adminRole === "superadmin") {
+      // Superadmins can see orders from any country
+      // No country filter
+    } else if (adminRole === "admin" || adminRole === "warehouse") {
+      getOrdersPerMonthQuery += " WHERE placing_orders.country = ?";
+      queryParams.push(adminCountryCode);
+    }
+
+    getOrdersPerMonthQuery += " GROUP BY month ORDER BY month ASC";
+
+    const [ordersPerMonth] = await pool.query(
+      getOrdersPerMonthQuery,
+      queryParams
+    );
+
+    if (ordersPerMonth.length === 0) {
+      return res.status(404).json({ message: "No orders found" });
+    }
+
+    res.status(200).json(ordersPerMonth);
+  } catch (error) {
+    console.error("Error fetching orders per month:", error);
+    res.status(500).json({ error: "Error fetching orders per month" });
+  }
+});
+
+app.get("/api/admin/orders/finished_packing", async (req, res) => {
+  const adminEmail = req.query.email;
+  const startDate = req.query.startDate;
+  const endDate = req.query.endDate;
+
+  if (!adminEmail) {
+    return res.status(401).json({ error: "Unauthorized: No email provided" });
+  }
+
+  try {
+    // Fetch the admin's country and role from the registration table
+    const countryCodeQuery =
+      "SELECT country, role FROM registration WHERE email = ?";
+    const [countryCodeResult] = await pool.query(countryCodeQuery, [
+      adminEmail,
+    ]);
+
+    if (countryCodeResult.length === 0) {
+      return res.status(404).json({ error: "Admin not found" });
+    }
+
+    const { country: adminCountryCode, role: adminRole } = countryCodeResult[0];
+
+    // Define the base query for fetching pending orders
+    let getOrdersQuery = `
+      SELECT placing_orders.*, 
+             GROUP_CONCAT(JSON_OBJECT('description', oi.description, 'quantity', oi.quantity, 'price', oi.price)) as items
+      FROM placing_orders
+      LEFT JOIN order_items oi ON placing_orders.id = oi.order_id
+      WHERE placing_orders.status = 'Finished Packing'
+    `;
+
+    let queryParams = [];
+
+    // If the user is not a superadmin, filter by country
+    if (adminRole !== "superadmin" && adminCountryCode !== "SUPERADMIN") {
+      getOrdersQuery += " AND placing_orders.country = ?";
+      queryParams.push(adminCountryCode);
+    }
+
+    // Add date filtering
+    if (startDate) {
+      getOrdersQuery += " AND placing_orders.created_at >= ?";
+      queryParams.push(new Date(startDate));
+    }
+
+    if (endDate) {
+      getOrdersQuery += " AND placing_orders.created_at <= ?";
+      queryParams.push(new Date(endDate));
+    }
+
+    // Group the results by order ID
+    getOrdersQuery += " GROUP BY placing_orders.id";
+
+    const [orders] = await pool.query(getOrdersQuery, queryParams);
+
+    if (orders.length === 0) {
+      return res.status(404).json({ message: "No pending orders found" });
+    }
+
+    const formattedOrders = orders.map((order) => ({
+      ...order,
+      items: order.items ? JSON.parse(`[${order.items}]`) : [],
+      ordernumber: order.ordernumber,
+    }));
+
+    res.status(200).json(formattedOrders);
+  } catch (error) {
+    console.error("Error fetching pending orders:", error);
+    res.status(500).json({ error: "Error fetching pending orders" });
+  }
+});
+
+app.get("/api/admin/orders/completed_orders", async (req, res) => {
+  const adminEmail = req.query.email;
+  const startDate = req.query.startDate;
+  const endDate = req.query.endDate;
+
+  if (!adminEmail) {
+    return res.status(401).json({ error: "Unauthorized: No email provided" });
+  }
+
+  try {
+    // Fetch the admin's country and role from the registration table
+    const countryCodeQuery =
+      "SELECT country, role FROM registration WHERE email = ?";
+    const [countryCodeResult] = await pool.query(countryCodeQuery, [
+      adminEmail,
+    ]);
+
+    if (countryCodeResult.length === 0) {
+      return res.status(404).json({ error: "Admin not found" });
+    }
+
+    const { country: adminCountryCode, role: adminRole } = countryCodeResult[0];
+
+    // Define the base query for fetching pending orders
+    let getOrdersQuery = `
+      SELECT placing_orders.*, 
+             GROUP_CONCAT(JSON_OBJECT('description', oi.description, 'quantity', oi.quantity, 'price', oi.price)) as items
+      FROM placing_orders
+      LEFT JOIN order_items oi ON placing_orders.id = oi.order_id
+      WHERE placing_orders.status = 'Completed'
+    `;
+
+    let queryParams = [];
+
+    // If the user is not a superadmin, filter by country
+    if (adminRole !== "superadmin" && adminCountryCode !== "SUPERADMIN") {
+      getOrdersQuery += " AND placing_orders.country = ?";
+      queryParams.push(adminCountryCode);
+    }
+
+    // Add date filtering
+    if (startDate) {
+      getOrdersQuery += " AND placing_orders.created_at >= ?";
+      queryParams.push(new Date(startDate));
+    }
+
+    if (endDate) {
+      getOrdersQuery += " AND placing_orders.created_at <= ?";
+      queryParams.push(new Date(endDate));
+    }
+
+    // Group the results by order ID
+    getOrdersQuery += " GROUP BY placing_orders.id";
+
+    const [orders] = await pool.query(getOrdersQuery, queryParams);
+
+    if (orders.length === 0) {
+      return res.status(404).json({ message: "No pending orders found" });
+    }
+
+    const formattedOrders = orders.map((order) => ({
+      ...order,
+      items: order.items ? JSON.parse(`[${order.items}]`) : [],
+      ordernumber: order.ordernumber,
+    }));
+
+    res.status(200).json(formattedOrders);
+  } catch (error) {
+    console.error("Error fetching pending orders:", error);
+    res.status(500).json({ error: "Error fetching pending orders" });
+  }
+});
 
 app.post("/api/newproducts", async (req, res) => {
   const {
@@ -1270,8 +2454,17 @@ app.post("/api/newproducts", async (req, res) => {
     mainCategory,
     subCategory,
   } = req.body;
+  const userEmail = req.headers["user-email"]; // Retrieve user email from headers
 
   try {
+    const permissions = await getAdminPermissions(userEmail);
+
+    if (!permissions.create_permission) {
+      return res
+        .status(403)
+        .json({ error: "Permission denied: Cannot create products" });
+    }
+
     // Insert product into the fulldata table
     const insertProductQuery = `
       INSERT INTO fulldata (partnumber, Description, image, thumb1, thumb2, mainCategory, subCategory)
@@ -1306,15 +2499,25 @@ app.post("/api/newproducts", async (req, res) => {
     res.status(500).json({ error: "Internal server error" });
   }
 });
+
 app.post("/api/newproducts/batch", async (req, res) => {
   const products = req.body; // Expecting an array of products
+  const userEmail = req.headers["user-email"]; // Retrieve user email from headers
 
   if (!Array.isArray(products) || products.length === 0) {
-    return res.status(400).json({ error: 'Invalid products data' });
+    return res.status(400).json({ error: "Invalid products data" });
   }
 
-  const connection = await pool.getConnection();
   try {
+    const permissions = await getAdminPermissions(userEmail);
+
+    if (!permissions.create_permission) {
+      return res
+        .status(403)
+        .json({ error: "Permission denied: Cannot create products" });
+    }
+
+    const connection = await pool.getConnection();
     await connection.beginTransaction();
 
     for (const product of products) {
@@ -1357,6 +2560,14 @@ app.post("/api/newproducts/batch", async (req, res) => {
         stock, // assuming stock is the same for all countries
       ]);
       await connection.query(insertPricesQuery, [priceValues]);
+
+      // Log successful addition of product
+      const auditLogQuery = `
+        INSERT INTO product_audit_log (product_id, action, details, changed_by)
+        VALUES (?, 'insert', ?, ?)
+      `;
+      const details = `Inserted product: partnumber=${partnumber}, description=${description}, mainCategory=${mainCategory}, subCategory=${subCategory}`;
+      await connection.query(auditLogQuery, [productId, details, userEmail]);
     }
 
     await connection.commit();
@@ -1369,7 +2580,6 @@ app.post("/api/newproducts/batch", async (req, res) => {
     connection.release();
   }
 });
-
 
 app.get("/api/viewproducts", async (req, res) => {
   try {
@@ -1395,7 +2605,8 @@ app.get("/api/viewproducts/:id", async (req, res) => {
 
   try {
     // Fetch the admin's country and role from the registration table
-    const countryQuery = "SELECT country, role FROM registration WHERE email = ?";
+    const countryQuery =
+      "SELECT country, role FROM registration WHERE email = ?";
     const [countryResult] = await pool.query(countryQuery, [adminEmail]);
 
     if (countryResult.length === 0) {
@@ -1425,7 +2636,7 @@ app.get("/api/viewproducts/:id", async (req, res) => {
     const queryParams = [productId];
 
     // If the user is not a superadmin, filter by country
-    if (adminRole !== 'superadmin') {
+    if (adminRole !== "superadmin") {
       pricesQuery += " AND country_code = ?";
       queryParams.push(adminCountryCode);
     }
@@ -1440,8 +2651,6 @@ app.get("/api/viewproducts/:id", async (req, res) => {
   }
 });
 
-
-
 app.put("/api/viewproducts/:id", async (req, res) => {
   const productId = req.params.id;
   const {
@@ -1453,18 +2662,53 @@ app.put("/api/viewproducts/:id", async (req, res) => {
     mainCategory,
     subCategory,
     prices,
+    email, // The email field sent from the frontend
   } = req.body;
 
   console.log(`Received PUT request for product ID: ${productId}`);
 
+  const connection = await pool.getConnection();
+
   try {
+    await connection.beginTransaction();
+
+    // Log the attempted update action
+    const details = `Attempted to update product: partnumber=${partnumber}, Description=${Description}, image=${image}, thumb1=${thumb1}, thumb2=${thumb2}, mainCategory=${mainCategory}, subCategory=${subCategory}, prices=${JSON.stringify(
+      prices
+    )}`;
+    const auditLogQueryAttempt = `
+      INSERT INTO product_audit_log (product_id, action, details, changed_by)
+      VALUES (?, 'attempted_update', ?, ?)
+    `;
+    await connection.query(auditLogQueryAttempt, [productId, details, email]);
+
+    // Check admin permissions before proceeding
+    const adminPermissions = await getAdminPermissions(email);
+    console.log("Admin permissions:", adminPermissions); // Debug permission retrieval
+
+    if (!adminPermissions || !adminPermissions.update_permission) {
+      // Log the failed attempt due to permission denial
+      const deniedDetails = `Permission denied for user: ${email}`;
+      const auditLogQueryDenied = `
+        INSERT INTO product_audit_log (product_id, action, details, changed_by)
+        VALUES (?, 'update_failed', ?, ?)
+      `;
+      await connection.query(auditLogQueryDenied, [
+        productId,
+        deniedDetails,
+        email,
+      ]);
+
+      throw new Error("Permission denied");
+    }
+
     // Update product details in the fulldata table
     const updateProductQuery = `
       UPDATE fulldata
       SET partnumber = ?, Description = ?, image = ?, thumb1 = ?, thumb2 = ?, mainCategory = ?, subCategory = ?
       WHERE id = ?
     `;
-    await pool.query(updateProductQuery, [
+    await connection.query(updateProductQuery, [
       partnumber,
       Description,
       image,
@@ -1477,7 +2721,7 @@ app.put("/api/viewproducts/:id", async (req, res) => {
 
     // Delete existing prices for the product
     const deletePricesQuery = `DELETE FROM product_prices WHERE product_id = ?`;
-    await pool.query(deletePricesQuery, [productId]);
+    await connection.query(deletePricesQuery, [productId]);
 
     // Insert or update prices and stock quantities
     const insertOrUpdatePricesQuery = `
@@ -1486,7 +2730,7 @@ app.put("/api/viewproducts/:id", async (req, res) => {
       ON DUPLICATE KEY UPDATE price = VALUES(price), stock_quantity = VALUES(stock_quantity);
     `;
     for (const price of prices) {
-      await pool.query(insertOrUpdatePricesQuery, [
+      await connection.query(insertOrUpdatePricesQuery, [
         productId,
         price.country_code,
         price.price,
@@ -1494,30 +2738,104 @@ app.put("/api/viewproducts/:id", async (req, res) => {
       ]);
     }
 
+    // Log the successful update action
+    const successDetails = `Successfully updated product details: partnumber=${partnumber}, Description=${Description}, image=${image}, thumb1=${thumb1}, thumb2=${thumb2}, mainCategory=${mainCategory}, subCategory=${subCategory}, prices=${JSON.stringify(
+      prices
+    )}`;
+    const auditLogQuerySuccess = `
+      INSERT INTO product_audit_log (product_id, action, details, changed_by)
+      VALUES (?, 'update_successful', ?, ?)
+    `;
+    await connection.query(auditLogQuerySuccess, [
+      productId,
+      successDetails,
+      email,
+    ]);
+
+    await connection.commit();
     res.json({ message: "Product updated successfully" });
   } catch (error) {
+    await connection.rollback();
     console.error("Error updating product:", error);
     res.status(500).json({ error: "Internal server error" });
+  } finally {
+    connection.release();
   }
 });
 
 app.delete("/api/viewproducts/:id", async (req, res) => {
-  const { id } = req.params;
+  const productId = parseInt(req.params.id, 10); // Ensure productId is an integer
+  const { email } = req.body; // Extract email from request body
+
   const connection = await pool.getConnection();
 
   try {
     await connection.beginTransaction();
 
-    // Delete from order_items table first if necessary
+    // Log the attempted delete action
+    const attemptDetails = `Attempted to delete product with ID: ${productId}`;
+    const auditLogAttemptQuery = `
+      INSERT INTO product_audit_log (product_id, action, details, changed_by)
+      VALUES (?, 'attempted_delete', ?, ?)
+    `;
+    await connection.query(auditLogAttemptQuery, [
+      productId,
+      attemptDetails,
+      email,
+    ]);
+
+    // Check admin permissions before proceeding
+    const adminPermissions = await getAdminPermissions(email);
+    console.log("Admin permissions:", adminPermissions); // Debug permission retrieval
+
+    if (!adminPermissions || !adminPermissions.delete_permission) {
+      // Log the failed attempt due to permission denial
+      const deniedDetails = `Permission denied for user: ${email}`;
+      const auditLogDeniedQuery = `
+        INSERT INTO product_audit_log (product_id, action, details, changed_by)
+        VALUES (?, 'delete_failed', ?, ?)
+      `;
+      await connection.query(auditLogDeniedQuery, [
+        productId,
+        deniedDetails,
+        email,
+      ]);
+
+      throw new Error("Permission denied");
+    }
 
     // Delete from product_prices table
-    await connection.query("DELETE FROM product_prices WHERE product_id = ?", [id]);
+    await connection.query("DELETE FROM product_prices WHERE product_id = ?", [
+      productId,
+    ]);
 
     // Delete from fulldata table
-    await connection.query("DELETE FROM fulldata WHERE id = ?", [id]);
+    await connection.query("DELETE FROM fulldata WHERE id = ?", [productId]);
+
+    // Log the successful delete action
+    const successDetails = `Successfully deleted product with ID: ${productId}`;
+    const auditLogSuccessQuery = `
+      INSERT INTO product_audit_log (product_id, action, details, changed_by)
+      VALUES (?, 'delete_successful', ?, ?)
+    `;
+    await connection.query(auditLogSuccessQuery, [
+      productId,
+      successDetails,
+      email,
+    ]);
 
     await connection.commit();
     res.json({ message: "Product deleted successfully" });
+
+    // Notify admin
+    const notificationLogQuery = `
+      INSERT INTO notifications (user_email, message, date)
+      VALUES (?, ?, NOW())
+    `;
+    await connection.query(notificationLogQuery, [
+      email,
+      `Product ${productId} deleted`,
+    ]);
   } catch (error) {
     await connection.rollback();
     console.error("Error deleting product:", error);
@@ -1527,14 +2845,42 @@ app.delete("/api/viewproducts/:id", async (req, res) => {
   }
 });
 
-
 app.get("/api/admin/products/near-completion", async (req, res) => {
+  const adminEmail = req.query.email;
+
+  if (!adminEmail) {
+    return res.status(401).json({ error: "Unauthorized: No email provided" });
+  }
+
   try {
+    // Fetch the admin's country and role from the registration table
+    const countryCodeQuery =
+      "SELECT country, role FROM registration WHERE email = ?";
+    const [countryCodeResult] = await pool.query(countryCodeQuery, [
+      adminEmail,
+    ]);
+
+    if (countryCodeResult.length === 0) {
+      return res.status(404).json({ error: "Admin not found" });
+    }
+
+    const { country: adminCountryCode, role: adminRole } = countryCodeResult[0];
+
+    // Define the base query for fetching products
+    let getProductsQuery = `
+      SELECT f.partnumber, f.description, pp.price, pp.stock_quantity, pp.country_code
+      FROM fulldata f
+      JOIN product_prices pp ON f.id = pp.product_id
+      WHERE pp.stock_quantity <= 12
+    `;
+
+    if (adminRole !== "superadmin") {
+      getProductsQuery += " AND pp.country_code = ?";
+    }
+
     const [products] = await pool.query(
-      `SELECT f.partnumber, f.description, pp.price, pp.stock_quantity, pp.country_code
-       FROM fulldata f
-       JOIN product_prices pp ON f.id = pp.product_id
-       WHERE pp.stock_quantity <= 12`
+      getProductsQuery,
+      adminRole !== "superadmin" ? [adminCountryCode] : []
     );
 
     if (products.length === 0) {
@@ -1559,26 +2905,29 @@ app.get("/api/admin/notifications", async (req, res) => {
 
   try {
     // Fetch the admin's country and role from the registration table
-    const adminDetailsQuery = "SELECT country, role FROM registration WHERE email = ?";
-    const [adminDetailsResult] = await pool.query(adminDetailsQuery, [adminEmail]);
+    const adminDetailsQuery =
+      "SELECT country, role FROM registration WHERE email = ?";
+    const [adminDetailsResult] = await pool.query(adminDetailsQuery, [
+      adminEmail,
+    ]);
 
     if (adminDetailsResult.length === 0) {
       return res.status(404).json({ error: "Admin not found" });
     }
 
-    const { country: adminCountryCode, role: adminRole } = adminDetailsResult[0];
+    const { country: adminCountryCode, role: adminRole } =
+      adminDetailsResult[0];
 
-   
     // Define the base query for fetching notifications
     let getNotificationsQuery = `
       SELECT * 
       FROM notifications
     `;
-    
+
     let queryParams = [];
 
     // If the user is not a superadmin, filter by country
-    if (adminRole !== 'superadmin' && adminCountryCode !== 'SUPERADMIN') {
+    if (adminRole !== "superadmin" && adminCountryCode !== "SUPERADMIN") {
       getNotificationsQuery += " WHERE country = ?";
       queryParams.push(adminCountryCode);
     }
@@ -1586,8 +2935,10 @@ app.get("/api/admin/notifications", async (req, res) => {
     // Order notifications by creation date
     getNotificationsQuery += " ORDER BY created_at DESC";
 
-  
-    const [notifications] = await pool.query(getNotificationsQuery, queryParams);
+    const [notifications] = await pool.query(
+      getNotificationsQuery,
+      queryParams
+    );
 
     if (notifications.length === 0) {
       return res.status(404).json({ message: "No notifications found" });
@@ -1607,8 +2958,6 @@ app.get("/api/admin/notifications", async (req, res) => {
   }
 });
 
-
-
 // Add this route to your Express server file (e.g., index.js or routes.js)
 app.put("/api/admin/notifications/:id/read", async (req, res) => {
   const { id } = req.params;
@@ -1618,7 +2967,9 @@ app.put("/api/admin/notifications/:id/read", async (req, res) => {
   try {
     // Fetch the notification to check its country
     const notificationQuery = "SELECT country FROM notifications WHERE id = ?";
-    const [notificationResult] = await connection.query(notificationQuery, [id]);
+    const [notificationResult] = await connection.query(notificationQuery, [
+      id,
+    ]);
 
     if (notificationResult.length === 0) {
       return res.status(404).json({ error: "Notification not found" });
@@ -1637,8 +2988,12 @@ app.put("/api/admin/notifications/:id/read", async (req, res) => {
     const { country: adminCountry, role: adminRole } = adminResult[0];
 
     // Check if the notification is relevant to the admin's country or if the admin is a superadmin
-    if (adminRole !== 'superadmin' && notificationCountry !== adminCountry) {
-      return res.status(403).json({ error: "Forbidden: Notification not relevant to your country" });
+    if (adminRole !== "superadmin" && notificationCountry !== adminCountry) {
+      return res
+        .status(403)
+        .json({
+          error: "Forbidden: Notification not relevant to your country",
+        });
     }
 
     // Mark the notification as read
@@ -1663,7 +3018,9 @@ app.delete("/api/admin/notifications/:id", async (req, res) => {
   try {
     // Fetch the notification to check its country
     const notificationQuery = "SELECT country FROM notifications WHERE id = ?";
-    const [notificationResult] = await connection.query(notificationQuery, [id]);
+    const [notificationResult] = await connection.query(notificationQuery, [
+      id,
+    ]);
 
     if (notificationResult.length === 0) {
       return res.status(404).json({ error: "Notification not found" });
@@ -1682,15 +3039,16 @@ app.delete("/api/admin/notifications/:id", async (req, res) => {
     const { country: adminCountry, role: adminRole } = adminResult[0];
 
     // Check if the notification is relevant to the admin's country or if the admin is a superadmin
-    if (adminRole !== 'superadmin' && notificationCountry !== adminCountry) {
-      return res.status(403).json({ error: "Forbidden: Notification not relevant to your country" });
+    if (adminRole !== "superadmin" && notificationCountry !== adminCountry) {
+      return res
+        .status(403)
+        .json({
+          error: "Forbidden: Notification not relevant to your country",
+        });
     }
 
     // Delete the notification
-    await connection.query(
-      "DELETE FROM notifications WHERE id = ?",
-      [id]
-    );
+    await connection.query("DELETE FROM notifications WHERE id = ?", [id]);
 
     res.json({ message: "Notification deleted" });
   } catch (error) {
@@ -1700,9 +3058,6 @@ app.delete("/api/admin/notifications/:id", async (req, res) => {
     connection.release();
   }
 });
-
-
-
 
 app.get("/api/admin/notifications/count", async (req, res) => {
   const adminEmail = req.query.email;
@@ -1727,15 +3082,17 @@ app.get("/api/admin/notifications/count", async (req, res) => {
     let countQuery;
     let queryParams = [];
 
-    if (adminRole === 'superadmin') {
+    if (adminRole === "superadmin") {
       // Superadmins receive the count of all unread notifications
-      countQuery = "SELECT COUNT(*) AS count FROM notifications WHERE status = 'unread'";
+      countQuery =
+        "SELECT COUNT(*) AS count FROM notifications WHERE status = 'unread'";
     } else {
       // Regular admins receive the count of unread notifications for their country
-      countQuery = "SELECT COUNT(*) AS count FROM notifications WHERE status = 'unread' AND country = ?";
+      countQuery =
+        "SELECT COUNT(*) AS count FROM notifications WHERE status = 'unread' AND country = ?";
       queryParams.push(adminCountry);
     }
- 
+
     // Fetch the count of unread notifications
     const [notificationCountResult] = await pool.query(countQuery, queryParams);
 
@@ -1744,7 +3101,7 @@ app.get("/api/admin/notifications/count", async (req, res) => {
   } catch (error) {
     console.error("Error fetching notifications count:", error);
     res.status(500).json({ error: "Error fetching notifications count" });
-  } 
+  }
 });
 
 app.get("/api/admin/users/count", async (req, res) => {
@@ -1756,8 +3113,11 @@ app.get("/api/admin/users/count", async (req, res) => {
 
   try {
     // Fetch the admin's country and role from the registration table
-    const countryCodeQuery = "SELECT country, role FROM registration WHERE email = ?";
-    const [countryCodeResult] = await pool.query(countryCodeQuery, [adminEmail]);
+    const countryCodeQuery =
+      "SELECT country, role FROM registration WHERE email = ?";
+    const [countryCodeResult] = await pool.query(countryCodeQuery, [
+      adminEmail,
+    ]);
 
     if (countryCodeResult.length === 0) {
       return res.status(404).json({ error: "Admin not found" });
@@ -1769,7 +3129,7 @@ app.get("/api/admin/users/count", async (req, res) => {
     let queryParams = [];
 
     // If the user is not a superadmin, filter by country
-    if (adminRole !== 'superadmin' && adminCountryCode !== 'SUPERADMIN') {
+    if (adminRole !== "superadmin" && adminCountryCode !== "SUPERADMIN") {
       userCountQuery += " WHERE country = ?";
       queryParams.push(adminCountryCode);
     }
@@ -1783,32 +3143,32 @@ app.get("/api/admin/users/count", async (req, res) => {
 });
 
 const countryMappings = {
-  'KE': 'Kenya',
-  'UG': 'Uganda',
-  'TZ': 'Tanzania'
+  KE: "Kenya",
+  UG: "Uganda",
+  TZ: "Tanzania",
 };
 
 // API endpoint to get the list of countries
-app.get('/api/countries', async (req, res) => {
+app.get("/api/countries", async (req, res) => {
   try {
     // Fetch unique country codes from the registration table
     const query = "SELECT DISTINCT country FROM registration";
     const [results] = await pool.query(query);
 
     // Map the codes to names using the hardcoded mapping
-    const countries = results.map(row => ({
+    const countries = results.map((row) => ({
       code: row.country,
-      name: countryMappings[row.country] || 'Unknown'
+      name: countryMappings[row.country] || "Unknown",
     }));
 
     res.json(countries);
   } catch (error) {
-    console.error('Error fetching countries:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    console.error("Error fetching countries:", error);
+    res.status(500).json({ error: "Internal server error" });
   }
 });
 
-app.get('/api/registeredusers', async (req, res) => {
+app.get("/api/registeredusers", async (req, res) => {
   const adminEmail = req.query.email;
   const filterCountry = req.query.country;
 
@@ -1817,8 +3177,11 @@ app.get('/api/registeredusers', async (req, res) => {
   }
 
   try {
-    const countryCodeQuery = "SELECT country, role FROM registration WHERE email = ?";
-    const [countryCodeResult] = await pool.query(countryCodeQuery, [adminEmail]);
+    const countryCodeQuery =
+      "SELECT country, role FROM registration WHERE email = ?";
+    const [countryCodeResult] = await pool.query(countryCodeQuery, [
+      adminEmail,
+    ]);
 
     if (countryCodeResult.length === 0) {
       return res.status(404).json({ error: "Admin not found" });
@@ -1830,14 +3193,15 @@ app.get('/api/registeredusers', async (req, res) => {
     let queryParams = [];
 
     // If the user is not a superadmin, filter by country
-    if (adminRole !== 'superadmin') {
+    if (adminRole !== "superadmin") {
       getUsersQuery += " WHERE country = ?";
       queryParams.push(adminCountryCode);
     }
 
     // Apply additional country filter if provided
     if (filterCountry) {
-      getUsersQuery += adminRole === 'superadmin' ? " WHERE country = ?" : " AND country = ?";
+      getUsersQuery +=
+        adminRole === "superadmin" ? " WHERE country = ?" : " AND country = ?";
       queryParams.push(filterCountry);
     }
 
@@ -1850,13 +3214,122 @@ app.get('/api/registeredusers', async (req, res) => {
   }
 });
 
+// In your Express server file
+app.get("/api/newregisteredusers", async (req, res) => {
+  const adminEmail = req.query.email;
+  const filterCountry = req.query.country;
+  const daysAgo = 14; // Number of days to filter recent registrations
 
+  if (!adminEmail) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
 
+  try {
+    const countryCodeQuery =
+      "SELECT country, role FROM registration WHERE email = ?";
+    const [countryCodeResult] = await pool.query(countryCodeQuery, [
+      adminEmail,
+    ]);
 
+    if (countryCodeResult.length === 0) {
+      return res.status(404).json({ error: "Admin not found" });
+    }
+
+    const { country: adminCountryCode, role: adminRole } = countryCodeResult[0];
+
+    // Get the date 14 days ago
+    const date14DaysAgo = new Date();
+    date14DaysAgo.setDate(date14DaysAgo.getDate() - daysAgo);
+    const formattedDate = date14DaysAgo.toISOString().split("T")[0]; // Format as YYYY-MM-DD
+
+    let getUsersQuery =
+      "SELECT * FROM registration WHERE registration_date >= ?";
+    let queryParams = [formattedDate];
+
+    // If the user is not a superadmin, filter by country
+    if (adminRole !== "superadmin") {
+      getUsersQuery += " AND country = ?";
+      queryParams.push(adminCountryCode);
+    }
+
+    // Apply additional country filter if provided
+    if (filterCountry) {
+      getUsersQuery += " AND country = ?";
+      queryParams.push(filterCountry);
+    }
+
+    const [users] = await pool.query(getUsersQuery, queryParams);
+
+    res.json(users);
+  } catch (error) {
+    console.error("Error fetching users:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+app.get("/api/monthlyusergrowth", async (req, res) => {
+  const adminEmail = req.query.email;
+  const filterCountry = req.query.country;
+
+  if (!adminEmail) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  try {
+    const countryCodeQuery =
+      "SELECT country, role FROM registration WHERE email = ?";
+    const [countryCodeResult] = await pool.query(countryCodeQuery, [
+      adminEmail,
+    ]);
+
+    if (countryCodeResult.length === 0) {
+      return res.status(404).json({ error: "Admin not found" });
+    }
+
+    const { country: adminCountryCode, role: adminRole } = countryCodeResult[0];
+
+    // Base query to get user registration count per month
+    let getUsersQuery = `
+      SELECT DATE_FORMAT(registration_date, '%Y-%m') AS month, COUNT(*) AS userCount
+      FROM registration
+      WHERE registration_date >= DATE_SUB(CURDATE(), INTERVAL 12 MONTH)
+    `;
+    let queryParams = [];
+
+    // Filter by country if needed
+    if (adminRole !== "superadmin") {
+      getUsersQuery += " AND country = ?";
+      queryParams.push(adminCountryCode);
+    }
+
+    // Apply additional country filter if provided
+    if (filterCountry) {
+      getUsersQuery += " AND country = ?";
+      queryParams.push(filterCountry);
+    }
+
+    getUsersQuery += " GROUP BY month ORDER BY month";
+
+    const [monthlyUsers] = await pool.query(getUsersQuery, queryParams);
+
+    res.json(monthlyUsers);
+  } catch (error) {
+    console.error("Error fetching monthly user growth:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
 
 app.get("/api/registeredusers/:id", async (req, res) => {
   try {
+    const { email } = req.query; // Assuming email is passed in the query parameters
     const userId = req.params.id;
+
+    // Check if the requesting admin has the right to view users
+    const permissions = await getAdminPermissions(email);
+    if (!permissions || !permissions.read_permission) {
+      return res.status(403).json({ message: "Access denied" });
+    }
+
+    // Fetch user details if permissions are valid
     const [user] = await pool.query("SELECT * FROM registration WHERE id = ?", [
       userId,
     ]);
@@ -1871,6 +3344,7 @@ app.get("/api/registeredusers/:id", async (req, res) => {
     res.status(500).json({ error: "Failed to fetch user details" });
   }
 });
+
 app.get("/api/categories", async (req, res) => {
   try {
     const [categories] = await pool.query(
@@ -1983,7 +3457,7 @@ app.get("/api/admin/orders/:orderId", async (req, res) => {
   try {
     const orderId = req.params.orderId;
     const [orders] = await pool.query(
-      `SELECT placing_orders.ordernumber, placing_orders.email, placing_orders.totalprice,
+      `SELECT placing_orders.ordernumber, placing_orders.email, placing_orders.totalprice, placing_orders.Status,
               GROUP_CONCAT(JSON_OBJECT('id', oi.id, 'description', oi.description, 'quantity', oi.quantity, 'price', oi.price)) as items
        FROM placing_orders
        LEFT JOIN order_items oi ON placing_orders.id = oi.order_id
@@ -2038,17 +3512,14 @@ app.patch("/api/admin/orders/:orderId/status", async (req, res) => {
       [`${userEmail}`, `Your order ${orderId} has been updated to ${status}`]
     );
 
-    res
-      .status(200)
-      .json({
-        message: "Order status updated and notification sent successfully",
-      });
+    res.status(200).json({
+      message: "Order status updated and notification sent successfully",
+    });
   } catch (error) {
     console.error("Error updating order status:", error);
     res.status(500).json({ error: "Error updating order status" });
   }
 });
-
 
 app.get("/admin/loggedInUsersCount", (req, res) => {
   const sql =
@@ -2066,7 +3537,6 @@ app.get("/admin/loggedInUsersCount", (req, res) => {
 app.get("/api/admin/users/logged-in-count", (req, res) => {
   res.json({ count: loggedInUsers.size });
 });
-
 
 app.get("/api/user", async (req, res) => {
   const userEmail = req.query.email;
@@ -2162,8 +3632,7 @@ app.put("/api/user/update", async (req, res) => {
   }
 });
 
-
-app.get('/api/admin/mostOrderedProducts', async (req, res) => {
+app.get("/api/admin/mostOrderedProducts", async (req, res) => {
   try {
     const [rows] = await pool.query(`
       SELECT partnumber, ANY_VALUE(description) as description, SUM(quantity) as total_quantity
@@ -2174,24 +3643,24 @@ app.get('/api/admin/mostOrderedProducts', async (req, res) => {
     `);
     res.json(rows);
   } catch (error) {
-    console.error('Error fetching most ordered products:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    console.error("Error fetching most ordered products:", error);
+    res.status(500).json({ error: "Internal server error" });
   }
 });
-app.get('/settings', (req, res) => {
+app.get("/settings", (req, res) => {
   res.json(userSettings);
 });
-app.post('/settings', (req, res) => {
+app.post("/settings", (req, res) => {
   const { theme, language, notifications } = req.body;
   // In a real app, save to the database
   userSettings.theme = theme;
   userSettings.language = language;
   userSettings.notifications = notifications;
-  res.status(200).send('Settings updated');
+  res.status(200).send("Settings updated");
 });
 // Assuming you are using Express and a database like PostgreSQL or MySQL
 
-app.get('/api/salesdata/:productId', async (req, res) => {
+app.get("/api/salesdata/:productId", async (req, res) => {
   const { productId } = req.params;
 
   try {
@@ -2203,47 +3672,69 @@ app.get('/api/salesdata/:productId', async (req, res) => {
        ORDER BY DATE(created_at)`,
       [productId]
     );
-    
+
     res.json(salesData.rows);
   } catch (error) {
-    console.error('Error fetching sales data:', error);
-    res.status(500).json({ error: 'Internal Server Error' });
+    console.error("Error fetching sales data:", error);
+    res.status(500).json({ error: "Internal Server Error" });
   }
 });
 const authenticate = async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({ error: 'Unauthorized: Token missing' });
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      return res.status(401).json({ error: "Unauthorized: Token missing" });
     }
-    
-    const token = authHeader.split(' ')[1];
+
+    const token = authHeader.split(" ")[1];
     const decoded = jwt.verify(token, secretKey);
-    
+
     req.user = decoded; // Attach user info to req
-    console.log('Authenticated user:', req.user); // Debug log
-    
+    console.log("Authenticated user:", req.user); // Debug log
+
     next();
   } catch (err) {
-    console.error('Authentication error:', err); // Log error details
-    res.status(401).json({ error: 'Unauthorized: Invalid token' });
+    console.error("Authentication error:", err); // Log error details
+    res.status(401).json({ error: "Unauthorized: Invalid token" });
   }
 };
 
+app.post("/api/admin/create-admin", async (req, res) => {
+  const { email, password, country, role } = req.body;
 
-app.post('/api/admin/create-admin',  async (req, res) => {
-  const { email, password, country } = req.body;
-  const Role = 'admin';
+  // Ensure the role is provided
+  if (!role) {
+    return res.status(400).json({ error: "Role is required" });
+  }
 
-
+  // Retrieve the email of the admin who is creating the new admin
+  const createdBy = req.user?.email || "system"; // Fallback to 'system' if `req.user.email` is not available
 
   try {
-    // Insert new admin user into the database
-    await pool.query('INSERT INTO registration (email, password, country, Role) VALUES (?, ?, ?, ?)', [email, password, country, Role]);
-    res.status(201).json({ message: 'Admin created successfully' });
+    // Hash the password
+    const hashedPassword = await bcrypt.hash(password, saltRounds);
+
+    // Insert new admin user into the database with the hashed password
+    await pool.query(
+      "INSERT INTO registration (email, password, country, role) VALUES (?, ?, ?, ?)",
+      [email, hashedPassword, country, role]
+    );
+
+    // Log the creation action
+    await pool.query(
+      "INSERT INTO admin_audit_log (email, action, created_by, details) VALUES (?, ?, ?, ?)",
+      [
+        email,
+        "create",
+        createdBy,
+        `Created admin with email=${email}, country=${country}, role=${role}`,
+      ]
+    );
+
+    res.status(201).json({ message: "Admin created successfully" });
   } catch (error) {
-    console.error('Error creating admin:', error);
-    res.status(500).json({ error: 'Internal Server Error' });
+    console.error("Error creating admin:", error);
+    res.status(500).json({ error: "Internal Server Error" });
   }
 });
 
@@ -2251,13 +3742,15 @@ app.get("/api/admin/compare-countries", async (req, res) => {
   const { countries } = req.query;
 
   if (!countries || !Array.isArray(countries) || countries.length < 2) {
-    return res.status(400).json({ error: "Invalid or insufficient countries provided" });
+    return res
+      .status(400)
+      .json({ error: "Invalid or insufficient countries provided" });
   }
 
   const connection = await pool.getConnection();
   try {
-    const countryPlaceholders = countries.map(() => '?').join(',');
-    
+    const countryPlaceholders = countries.map(() => "?").join(",");
+
     // Query to get the number of orders per country
     const ordersQuery = `
       SELECT country, COUNT(*) AS order_count
@@ -2282,16 +3775,16 @@ app.get("/api/admin/compare-countries", async (req, res) => {
     const comparisonData = countries.reduce((acc, country) => {
       acc[country] = {
         order_count: 0,
-        user_count: 0
+        user_count: 0,
       };
       return acc;
     }, {});
 
-    ordersResult.forEach(row => {
+    ordersResult.forEach((row) => {
       comparisonData[row.country].order_count = row.order_count;
     });
 
-    usersResult.forEach(row => {
+    usersResult.forEach((row) => {
       comparisonData[row.country].user_count = row.user_count;
     });
 
@@ -2304,172 +3797,737 @@ app.get("/api/admin/compare-countries", async (req, res) => {
   }
 });
 
+// Add this to your Express app
+
+// Update your Express app with this endpoint
+app.get("/api/admin/country-logins", async (req, res) => {
+  try {
+    // Fetch country logins excluding superadmin
+    const query = `
+      SELECT r.country AS country,
+             COUNT(*) AS login_count
+      FROM audit_logs al
+      JOIN registration r ON al.email = r.email
+      WHERE r.role != 'superadmin'
+        AND al.action = 'login'
+        AND al.timestamp >= DATE_SUB(CURDATE(), INTERVAL 4 MONTH)
+      GROUP BY r.country
+      ORDER BY login_count DESC;
+    `;
+
+    const [rows] = await pool.query(query);
+
+    if (rows.length === 0) {
+      return res.status(404).json({ message: "No login data found" });
+    }
+
+    res.status(200).json(rows);
+  } catch (error) {
+    console.error("Error fetching country logins:", error);
+    res.status(500).json({ error: "Error fetching country logins" });
+  }
+});
+app.post("/api/logout", async (req, res) => {
+  const { email } = req.body;
+
+  if (!email) {
+    return res.status(400).json({ message: "Email is required" });
+  }
+
+  const sql = "DELETE FROM logins WHERE email = ?";
+
+  try {
+    await pool.query(sql, [email]);
+    return res.json({ message: "User logged out and record deleted successfully" });
+  } catch (error) {
+    console.error("Error logging out user:", error);
+    return res.status(500).json({ message: "Internal Server Error" });
+  }
+});
 
 
 
+
+// API to fetch all logged-in users
+app.get("/api/logged-in-users", async (req, res) => {
+  const recentHours = 24; // Adjust this as needed
+
+  // Calculate the cutoff time for recent logins
+  const cutoffTime = new Date();
+  cutoffTime.setHours(cutoffTime.getHours() - recentHours);
+
+  const sql = `
+    SELECT r.email, l.login_time
+    FROM logins l
+    JOIN registration r ON l.user_id = r.id
+    WHERE l.login_time >= ?
+    ORDER BY l.login_time DESC
+  `;
+
+  try {
+    const [rows] = await pool.query(sql, [cutoffTime]);
+
+    return res.json({
+      message: "Fetched logged-in users successfully",
+      data: rows
+    });
+  } catch (error) {
+    console.error("Error fetching logged-in users:", error);
+    return res.status(500).json({ message: "Internal Server Error" });
+  }
+});
+app.get('/api/logins/hourly', async (req, res) => {
+  const { date } = req.query;
+
+  try {
+    const query = `
+      SELECT HOUR(login_time) AS hour, COUNT(*) AS count
+      FROM logins
+      WHERE DATE(login_time) = ?
+      GROUP BY HOUR(login_time)
+      ORDER BY hour;
+    `;
+
+    const [rows] = await pool.query(query, [date]);
+
+    res.json(rows);
+  } catch (error) {
+    console.error('Error fetching logins count by hour:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+app.get('/api/logins/count', async (req, res) => {
+  try {
+    const sql = "SELECT COUNT(*) AS count FROM logins"; // Adjust the query based on your schema
+    const [results] = await pool.query(sql);
+    res.json({ count: results[0].count });
+  } catch (error) {
+    console.error('Error fetching logged-in users count:', error);
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+});
+
+
+app.get("/api/admins", async (req, res) => {
+  try {
+    const [admins] = await pool.query(
+      `SELECT id, firstName AS name, email, role
+       FROM registration
+       WHERE role IN ('admin', 'superadmin','finance')`
+    );
+
+    if (admins.length === 0) {
+      console.log("No admins found");
+      res.json([]);
+    } else {
+      res.json(admins);
+    }
+  } catch (error) {
+    console.error("Error fetching admins:", error);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
+app.get("/api/admins/:id/permissions", async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const [permissions] = await pool.query(
+      `SELECT create_permission, read_permission, update_permission, delete_permission
+       FROM admin_rights
+       WHERE user_id = ?`,
+      [id]
+    );
+
+    if (permissions.length === 0) {
+      console.log("No permissions found for admin:", id);
+      res.status(404).json({ error: "No permissions found for admin" });
+    } else {
+      res.json(permissions[0]);
+    }
+  } catch (error) {
+    console.error("Error fetching permissions:", error);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
+app.post("/api/admin/update", async (req, res) => {
+  const {
+    user_id,
+    role,
+    create_permission,
+    read_permission,
+    update_permission,
+    delete_permission,
+  } = req.body;
+
+  try {
+    const [result] = await pool.query(
+      `UPDATE admin_rights 
+       SET role = ?, create_permission = ?, read_permission = ?, update_permission = ?, delete_permission = ? 
+       WHERE user_id = ?`,
+      [
+        role,
+        create_permission,
+        read_permission,
+        update_permission,
+        delete_permission,
+        user_id,
+      ]
+    );
+
+    if (result.affectedRows === 0) {
+      console.log("No rows updated");
+      res.status(404).json({ error: "Admin not found" });
+    } else {
+      console.log("Admin rights updated successfully");
+      res.json({ message: "Admin rights updated successfully" });
+    }
+  } catch (error) {
+    console.error("Error updating admin rights:", error);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
+// Fetch permissions for a specific admin
+app.get("/api/admins/:id/permissions", async (req, res) => {
+  const { id } = req.params;
+  try {
+    const [permissions] = await pool.query(
+      `SELECT create_permission, read_permission, update_permission, delete_permission
+       FROM admin_rights
+       WHERE user_id = ?`,
+      [id]
+    );
+    if (permissions.length === 0) {
+      res.status(404).json({ error: "No permissions found" });
+    } else {
+      res.json(permissions[0]);
+    }
+  } catch (error) {
+    console.error("Error fetching permissions:", error);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
+// Create or update permissions for an admin
+app.post("/api/admin/permissions", async (req, res) => {
+  const {
+    user_id,
+    role,
+    create_permission,
+    read_permission,
+    update_permission,
+    delete_permission,
+    manage_users_permission, // New permission
+    manage_products_permission, // New permission
+    manage_orders_permission, // New permission
+  } = req.body;
+
+  try {
+    const [existingPermissions] = await pool.query(
+      `SELECT * FROM admin_rights WHERE user_id = ?`,
+      [user_id]
+    );
+
+    if (existingPermissions.length === 0) {
+      const [result] = await pool.query(
+        `INSERT INTO admin_rights (
+          user_id, role, create_permission, read_permission, update_permission, delete_permission,
+          manage_users_permission, manage_products_permission, manage_orders_permission
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          user_id,
+          role,
+          create_permission,
+          read_permission,
+          update_permission,
+          delete_permission,
+          manage_users_permission,
+          manage_products_permission,
+          manage_orders_permission,
+        ]
+      );
+      console.log("Permissions created successfully");
+      res.json({ message: "Permissions created successfully" });
+    } else {
+      const [result] = await pool.query(
+        `UPDATE admin_rights
+         SET role = ?, create_permission = ?, read_permission = ?, update_permission = ?, delete_permission = ?,
+             manage_users_permission = ?, manage_products_permission = ?, manage_orders_permission = ?
+         WHERE user_id = ?`,
+        [
+          role,
+          create_permission,
+          read_permission,
+          update_permission,
+          delete_permission,
+          manage_users_permission,
+          manage_products_permission,
+          manage_orders_permission,
+          user_id,
+        ]
+      );
+      console.log("Permissions updated successfully");
+      res.json({ message: "Permissions updated successfully" });
+    }
+  } catch (error) {
+    console.error("Error creating/updating permissions:", error);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
+app.get("/api/admin/permissions/:adminId", async (req, res) => {
+  const { adminId } = req.params;
+
+  try {
+    const [rows] = await pool.query(
+      `SELECT create_permission, read_permission, update_permission, delete_permission, role,
+              manage_users_permission, manage_products_permission, manage_orders_permission
+       FROM admin_rights
+       WHERE user_id = ?`,
+      [adminId]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ message: "Admin permissions not found" });
+    }
+
+    res.json(rows[0]);
+  } catch (error) {
+    console.error("Error fetching admin permissions:", error);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
+// Fetch audit logs
+app.get("/api/audit-logs", async (req, res) => {
+  try {
+    const { date, time, changed_by } = req.query;
+    let query = "SELECT * FROM audit_logs WHERE 1=1";
+
+    if (date) {
+      query += ` AND DATE(timestamp) = '${date}'`;
+    }
+
+    if (time) {
+      // Construct datetime range
+      const startTime = `${date} ${time}`;
+      const endTime = `${date} ${time}:59`; // Ensure to include seconds in the end time for better accuracy
+      query += ` AND timestamp BETWEEN '${startTime}' AND '${endTime}'`;
+    }
+
+    if (changed_by) {
+      query += ` AND email LIKE '%${changed_by}%'`;
+    }
+
+    const [rows] = await pool.query(query);
+    res.json(rows);
+  } catch (error) {
+    console.error("Error fetching audit logs:", error);
+    res.status(500).json({ error: "Failed to fetch audit logs" });
+  }
+});
+
+app.get("/api/all-audit-logs", async (req, res) => {
+  try {
+    const { date, time, changed_by } = req.query;
+    let query = "SELECT * FROM audit_logs WHERE 1=1";
+    let productQuery = "SELECT * FROM product_audit_log WHERE 1=1";
+
+    if (date) {
+      query += ` AND DATE(timestamp) = '${date}'`;
+      productQuery += ` AND DATE(timestamp) = '${date}'`;
+    }
+
+    if (time) {
+      const startTime = `${date} ${time}`;
+      const endTime = `${date} ${time}:59`;
+      query += ` AND timestamp BETWEEN '${startTime}' AND '${endTime}'`;
+      productQuery += ` AND timestamp BETWEEN '${startTime}' AND '${endTime}'`;
+    }
+
+    if (changed_by) {
+      query += ` AND email LIKE '%${changed_by}%'`;
+      productQuery += ` AND changed_by LIKE '%${changed_by}%'`; // Adjust if different column
+    }
+
+    const [auditLogs] = await pool.query(query);
+    const [productAuditLogs] = await pool.query(productQuery);
+
+    const combinedLogs = [...auditLogs, ...productAuditLogs];
+    combinedLogs.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
+    res.json(combinedLogs);
+  } catch (error) {
+    console.error("Error fetching audit logs:", error);
+    res.status(500).json({ error: "Failed to fetch audit logs" });
+  }
+});
+
+app.get("/api/product-audit-logs", async (req, res) => {
+  try {
+    const { date, time, changed_by } = req.query;
+    let query = "SELECT * FROM product_audit_log WHERE 1=1";
+
+    if (date) {
+      query += ` AND DATE(timestamp) = '${date}'`;
+    }
+
+    if (time) {
+      const startTime = `${date} ${time}`;
+      const endTime = `${date} ${time}:59`;
+      query += ` AND timestamp BETWEEN '${startTime}' AND '${endTime}'`;
+    }
+
+    if (changed_by) {
+      query += ` AND changed_by LIKE '%${changed_by}%'`; // Adjust if different column
+    }
+
+    const [rows] = await pool.query(query);
+    res.json(rows);
+  } catch (error) {
+    console.error("Error fetching product audit logs:", error);
+    res.status(500).json({ error: "Failed to fetch product audit logs" });
+  }
+});
+
+app.get("/api/admin/productOrderCount/:partnumber", async (req, res) => {
+  const { partnumber } = req.params; // Get partnumber from URL parameters
+
+  if (!partnumber) {
+    return res.status(400).json({ error: "Part number is required" });
+  }
+
+  try {
+    // Query to get the total quantity ordered for the specified partnumber
+    const [rows] = await pool.query(
+      `
+      SELECT partnumber, SUM(quantity) as total_quantity
+      FROM order_items
+      WHERE partnumber = ?
+      GROUP BY partnumber
+    `,
+      [partnumber]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: "Product not found" });
+    }
+
+    res.json(rows[0]); // Send the result as JSON
+  } catch (error) {
+    console.error("Error fetching order count for product:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// In your Express app
+app.post("/api/admin_rights/update", async (req, res) => {
+  const {
+    admin_id,
+    create_permission,
+    read_permission,
+    update_permission,
+    delete_permission,
+  } = req.body;
+
+  try {
+    await pool.query(
+      `INSERT INTO admin_rights (user_id, create_permission, read_permission, update_permission, delete_permission)
+       VALUES (?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE
+       create_permission = VALUES(create_permission),
+       read_permission = VALUES(read_permission),
+       update_permission = VALUES(update_permission),
+       delete_permission = VALUES(delete_permission)`,
+      [
+        admin_id,
+        create_permission,
+        read_permission,
+        update_permission,
+        delete_permission,
+      ]
+    );
+
+    res.status(200).json({ message: "Admin rights updated successfully" });
+  } catch (error) {
+    console.error("Error updating admin rights:", error);
+    res.status(500).json({ error: "Failed to update admin rights" });
+  }
+});
+
+app.get("/api/admin/orders/status-counts", async (req, res) => {
+  const adminEmail = req.query.email;
+
+  if (!adminEmail) {
+    return res.status(401).json({ error: "Unauthorized: No email provided" });
+  }
+
+  try {
+    // Fetch the admin's country and role from the registration table
+    const countryCodeQuery =
+      "SELECT country, role FROM registration WHERE email = ?";
+    const [countryCodeResult] = await pool.query(countryCodeQuery, [
+      adminEmail,
+    ]);
+
+    if (countryCodeResult.length === 0) {
+      return res.status(404).json({ error: "Admin not found" });
+    }
+
+    const { country: adminCountryCode, role: adminRole } = countryCodeResult[0];
+
+    // Define the base query for fetching order counts by status
+    let getCountsQuery = `
+      SELECT 
+        SUM(CASE WHEN placing_orders.status = 'Pending' THEN 1 ELSE 0 END) AS pending_count,
+        SUM(CASE WHEN placing_orders.status = 'Approved' THEN 1 ELSE 0 END) AS approved_count,
+        SUM(CASE WHEN placing_orders.status = 'Completed' THEN 1 ELSE 0 END) AS completed_count
+      FROM placing_orders
+    `;
+
+    let queryParams = [];
+
+    // If the user is not a superadmin, filter by country
+    if (adminRole !== "superadmin" && adminCountryCode !== "SUPERADMIN") {
+      getCountsQuery += " WHERE placing_orders.country = ?";
+      queryParams.push(adminCountryCode);
+    }
+
+    // Execute the query to get counts
+    const [counts] = await pool.query(getCountsQuery, queryParams);
+
+    res.status(200).json(counts[0]);
+  } catch (error) {
+    console.error("Error fetching order status counts:", error);
+    res.status(500).json({ error: "Error fetching order status counts" });
+  }
+});
+
+// Assuming you're using Express.js and a MySQL database
+
+app.get("/api/admin-email", async (req, res) => {
+  const { userEmail } = req.query;
+
+  if (!userEmail) {
+    return res.status(400).json({ message: "User email is required" });
+  }
+
+  try {
+    // Step 1: Fetch the current user's country
+    const [userRows] = await pool.query(
+      "SELECT country FROM registration WHERE email = ? LIMIT 1",
+      [userEmail]
+    );
+
+    if (userRows.length === 0) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    const countryCode = userRows[0].country;
+
+    // Step 2: Fetch the admin email for the user's country
+    const [adminRows] = await pool.query(
+      "SELECT email FROM registration WHERE role = ? AND country = ? LIMIT 1",
+      ["admin", countryCode]
+    );
+
+    if (adminRows.length > 0) {
+      return res.json({ email: adminRows[0].email });
+    } else {
+      return res.status(404).json({ message: "Admin not found" });
+    }
+  } catch (error) {
+    console.error("Error fetching admin email:", error);
+    return res.status(500).json({ message: "Internal Server Error" });
+  }
+});
 
 //////////////////////////////Admin/////////////////////////////////////////
 
 
+/////////////////////////////Finance///////////////////////////////////////
 
-
-////////////////////////////MinAdmin/////////////////////////////////////////
-
-
-app.get('/api/minadmin/users/count', async (req, res) => {
-  const userEmail = req.query.email;
-
-  if (!userEmail) {
-    console.error("No user email provided");
-    return res.status(401).json({ error: "Unauthorized" });
-  }
-
+app.get('/api/exchange-rates', async (req, res) => {
   try {
-    const countryCodeQuery = "SELECT country FROM registration WHERE email = ?";
-    const [countryCodeResult] = await pool.query(countryCodeQuery, [userEmail]);
+    const apiKey = '734e134b1dcdfe32c5e1d132'; // Use your actual API key
+    const apiUrl = `https://v6.exchangerate-api.com/v6/${apiKey}/latest/USD`;
 
-    if (countryCodeResult.length === 0) {
-      console.error(`User not found with email: ${userEmail}`);
-      return res.status(404).json({ error: "User not found" });
+    // Fetch the exchange rates from the API
+    const response = await axios.get(apiUrl);
+
+    // Check if the response contains the rates
+    if (response.data && response.data.conversion_rates) {
+      const { TZS, UGX, KES } = response.data.conversion_rates;
+      res.json({
+        TZS_USD: TZS,
+        UGX_USD: UGX,
+        KES_USD: KES,
+      });
+    } else {
+      console.error('Response data is missing conversion_rates:', response.data);
+      res.status(500).json({ error: 'Failed to fetch exchange rates' });
     }
-
-
-    const userCountryCode = countryCodeResult[0].country;
- 
-
-    // Fetch the count of users from the same country
-    const sql = "SELECT COUNT(*) AS count FROM registration WHERE country = ?";
-    const [results] = await pool.query(sql, [userCountryCode]);
-
-    res.json(results[0]);
   } catch (error) {
-    console.error('Error fetching user count:', error);
-    res.status(500).json({ error: "Internal server error" });
+    console.error('Error fetching exchange rates:', error.response ? error.response.data : error.message);
+    res.status(500).json({ error: 'Error fetching exchange rates' });
   }
 });
-
-app.get("/api/minadmin/orders/count", async (req, res) => {
-  const userEmail = req.query.email;
-
-  if (!userEmail) {
-    console.error("No user email provided");
-    return res.status(401).json({ error: "Unauthorized" });
-  }
-
-  try {
-    // Fetch the user's country from the registration table
-    const countryCodeQuery = "SELECT country FROM registration WHERE email = ?";
-    const [countryCodeResult] = await pool.query(countryCodeQuery, [userEmail]);
-
-    if (countryCodeResult.length === 0) {
-      console.error(`User not found with email: ${userEmail}`);
-      return res.status(404).json({ error: "User not found" });
-    }
-
-    const userCountryCode = countryCodeResult[0].country;
-    console.log(`User country code: ${userCountryCode}`);
-
-    // Fetch the count of orders from placing_orders where the country matches
-    const ordersCountQuery = `
-      SELECT COUNT(*) AS count 
-      FROM placing_orders 
-      WHERE country = ?
-    `;
-    const [rows] = await pool.query(ordersCountQuery, [userCountryCode]);
-
-    console.log(`Orders count for country ${userCountryCode}: ${rows[0].count}`);
-
-    res.json({ count: rows[0].count });
-  } catch (error) {
-    console.error("Error fetching order count:", error);
-    res.status(500).json({ error: "Error fetching order count" });
-  }
-});
-
-
-
-
-app.get("/api/minadmin/products/count", async (req, res) => {
-  const userEmail = req.query.email;
-
-  if (!userEmail) {
-    console.error("No user email provided");
-    return res.status(401).json({ error: "Unauthorized" });
-  }
-
-  try {
-    // Fetch the country based on the user's email
-    const countryCodeQuery = "SELECT country FROM registration WHERE email = ?";
-    const [countryCodeResult] = await pool.query(countryCodeQuery, [userEmail]);
-
-    if (countryCodeResult.length === 0) {
-      console.error(`User not found with email: ${userEmail}`);
-      return res.status(404).json({ error: "User not found" });
-    }
-
-    const userCountryCode = countryCodeResult[0].country;
-    console.log(`User country code: ${userCountryCode}`);
-
-    // Fetch the count of products based on the user's country
-    const countQuery = `
-      SELECT COUNT(*) AS count
-      FROM fulldata p
-      JOIN product_prices pp ON p.id = pp.product_id
-      WHERE pp.country_code = ?
-    `;
-    const [countResult] = await pool.query(countQuery, [userCountryCode]);
-
-    res.json({ count: countResult[0].count });
-  } catch (error) {
-    console.error("Error fetching product count:", error);
-    res.status(500).json({ error: "Error fetching product count" });
-  }
-});
-
-
-app.get("/api/miniadmin/registeredusers", async (req, res) => {
+app.get("/api/finance-sales-by-month", async (req, res) => {
   const adminEmail = req.query.email;
+  const filterMonth = req.query.month; // Format: YYYY-MM
 
   if (!adminEmail) {
-    console.error("No admin email provided");
-    return res.status(401).json({ error: "Unauthorized" });
+    return res.status(401).json({ error: "Unauthorized: No email provided" });
   }
 
   try {
-    // Fetch the admin's country from the registration table
-    const countryCodeQuery = "SELECT country FROM registration WHERE email = ?";
-    const [countryCodeResult] = await pool.query(countryCodeQuery, [adminEmail]);
+    // Fetch the admin's country and role from the registration table
+    const countryCodeQuery =
+      "SELECT country, role FROM registration WHERE email = ?";
+    const [countryCodeResult] = await pool.query(countryCodeQuery, [
+      adminEmail,
+    ]);
 
     if (countryCodeResult.length === 0) {
-      console.error(`Admin not found with email: ${adminEmail}`);
       return res.status(404).json({ error: "Admin not found" });
     }
 
-    const adminCountryCode = countryCodeResult[0].country;
-    console.log(`Admin country code: ${adminCountryCode}`);
+    const { country: adminCountryCode, role: adminRole } = countryCodeResult[0];
 
-    // Fetch registered users from the same country as the admin
-    const getUsersQuery = "SELECT * FROM registration WHERE country = ?";
-    const [users] = await pool.query(getUsersQuery, [adminCountryCode]);
+    // Define the base query for fetching monthly sales
+    let getSalesQuery = `
+      SELECT DATE_FORMAT(created_at, '%Y-%m') as month, SUM(totalprice) as total_sales
+      FROM placing_orders
+    `;
 
-    res.json(users);
+    let queryParams = [];
+
+    // Filter by the specified month, or default to the current month
+    if (filterMonth) {
+      getSalesQuery += " WHERE DATE_FORMAT(created_at, '%Y-%m') = ?";
+      queryParams.push(filterMonth);
+    } else {
+      const currentMonth = new Date();
+      getSalesQuery += " WHERE YEAR(created_at) = ? AND MONTH(created_at) = ?";
+      queryParams.push(currentMonth.getFullYear(), currentMonth.getMonth() + 1);
+    }
+
+    // Filter by country based on the admin's role
+    if (adminRole !== "superadmin") {
+      getSalesQuery += " AND country = ?";
+      queryParams.push(adminCountryCode);
+    }
+
+    // Group the results by month and sum total sales
+    getSalesQuery += " GROUP BY month ORDER BY month DESC";
+
+    const [sales] = await pool.query(getSalesQuery, queryParams);
+
+    if (sales.length === 0) {
+      return res.status(404).json({ message: "No sales found for the specified period" });
+    }
+
+    res.status(200).json(sales);
   } catch (error) {
-    console.error("Error fetching users:", error);
-    res.status(500).json({ error: "Internal server error" });
+    console.error("Error fetching sales by month:", error);
+    res.status(500).json({ error: "Error fetching sales data" });
+  }
+});
+app.get('/api/weekly-sales', async (req, res) => {
+  const { start_date, end_date } = req.query;
+
+  if (!start_date || !end_date) {
+      return res.status(400).json({ error: "Please provide start_date and end_date query parameters." });
+  }
+
+  try {
+      const query = `
+          SELECT 
+              DATE_FORMAT(created_at, '%Y-%u') AS year_week,
+              SUM(totalprice) AS weekly_sales
+          FROM 
+              placing_orders
+          WHERE
+              created_at BETWEEN ? AND ?
+          GROUP BY 
+              year_week
+          ORDER BY 
+              year_week;
+      `;
+
+      const [results] = await pool.query(query, [start_date, end_date]);
+
+      return res.status(200).json(results);
+  } catch (error) {
+      console.error('Error fetching weekly sales:', error);
+      return res.status(500).json({ error: 'An error occurred while fetching the data.' });
+  }
+});
+
+app.get("/api/finance-sales-current-previous-month", async (req, res) => {
+  const adminEmail = req.query.email;
+
+  if (!adminEmail) {
+    return res.status(401).json({ error: "Unauthorized: No email provided" });
+  }
+
+  try {
+    // Fetch the admin's country and role from the registration table
+    const countryCodeQuery =
+      "SELECT country, role FROM registration WHERE email = ?";
+    const [countryCodeResult] = await pool.query(countryCodeQuery, [
+      adminEmail,
+    ]);
+
+    if (countryCodeResult.length === 0) {
+      return res.status(404).json({ error: "Admin not found" });
+    }
+
+    const { country: adminCountryCode, role: adminRole } = countryCodeResult[0];
+
+    const currentMonth = new Date();
+    const currentMonthStr = currentMonth.toISOString().slice(0, 7); // YYYY-MM
+    const previousMonth = new Date(currentMonth.setMonth(currentMonth.getMonth() - 1));
+    const previousMonthStr = previousMonth.toISOString().slice(0, 7); // YYYY-MM
+
+    // Define the query to fetch sales for the current and previous month
+    let getSalesQuery = `
+      SELECT DATE_FORMAT(created_at, '%Y-%m') as month, SUM(totalprice) as total_sales
+      FROM placing_orders
+      WHERE DATE_FORMAT(created_at, '%Y-%m') IN (?, ?)
+    `;
+
+    let queryParams = [currentMonthStr, previousMonthStr];
+
+    // Filter by country based on the admin's role
+    if (adminRole !== "superadmin") {
+      getSalesQuery += " AND country = ?";
+      queryParams.push(adminCountryCode);
+    }
+
+    getSalesQuery += " GROUP BY month ORDER BY month DESC";
+
+    const [sales] = await pool.query(getSalesQuery, queryParams);
+
+    if (sales.length === 0) {
+      return res.status(404).json({ message: "No sales data found for the specified period" });
+    }
+
+    res.status(200).json(sales);
+  } catch (error) {
+    console.error("Error fetching sales for current and previous months:", error);
+    res.status(500).json({ error: "Error fetching sales data" });
   }
 });
 
 
 
 
+////////////////////////////Finance/////////////////////////////////////////
 
-
-
-
-
-
-
-//////////////////////////MinAdmin//////////////////////////////////////////
 const port = process.env.PORT || 3001;
 const server = http.createServer(app);
 
