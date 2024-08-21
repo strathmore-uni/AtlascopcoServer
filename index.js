@@ -9,6 +9,7 @@ const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const Joi = require("joi");
 const axios = require('axios');
+const moment = require('moment');
 
 require("dotenv").config();
 
@@ -858,6 +859,35 @@ app.get("/api/orders/:orderId", async (req, res) => {
     res.status(500).json({ error: "Error fetching order details" });
   }
 });
+
+// Add this route to your Express app
+app.put("/api/clearedorders/:orderId", async (req, res) => {
+  const orderId = req.params.orderId;
+
+  if (!orderId) {
+    return res.status(400).json({ error: "Order ID parameter is required" });
+  }
+
+  try {
+    // Update the order status to 'Cleared' (or whatever status you want)
+    const [result] = await pool.query(
+      `UPDATE placing_orders
+       SET status = 'Cleared'
+       WHERE id = ?`,
+      [orderId]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: "Order not found" });
+    }
+
+    res.status(200).json({ message: "Order cleared successfully" });
+  } catch (error) {
+    console.error("Error updating order status:", error);
+    res.status(500).json({ error: "Error updating order status" });
+  }
+});
+
 
 app.get("/api/search", async (req, res) => {
   const searchTerm = req.query.term || "";
@@ -4460,12 +4490,44 @@ app.get('/api/weekly-sales', async (req, res) => {
 
       const [results] = await pool.query(query, [start_date, end_date]);
 
+      if (results.length === 0) {
+          return res.status(404).json({ error: 'No sales data found for the given period.' });
+      }
+
       return res.status(200).json(results);
   } catch (error) {
       console.error('Error fetching weekly sales:', error);
       return res.status(500).json({ error: 'An error occurred while fetching the data.' });
   }
 });
+app.get('/api/monthly-sales', async (req, res) => {
+  const endDate = moment().format('YYYY-MM-DD');
+  const startDate = moment().subtract(5, 'months').startOf('month').format('YYYY-MM-DD');
+
+  try {
+    const query = `
+      SELECT 
+          YEAR(created_at) AS year, 
+          MONTH(created_at) AS month, 
+          SUM(CAST(totalprice AS DECIMAL(10, 2))) AS monthly_sales
+      FROM placing_orders
+      WHERE created_at BETWEEN ? AND ?
+      GROUP BY YEAR(created_at), MONTH(created_at)
+      ORDER BY YEAR(created_at), MONTH(created_at);
+    `;
+
+    const [results] = await pool.query(query, [startDate, endDate]);
+
+
+    return res.status(200).json(results);
+  } catch (error) {
+    console.error('Error fetching monthly sales:', error);
+    return res.status(500).json({ error: 'An error occurred while fetching the data.' });
+  }
+});
+
+
+
 
 app.get("/api/finance-sales-current-previous-month", async (req, res) => {
   const adminEmail = req.query.email;
@@ -4522,6 +4584,36 @@ app.get("/api/finance-sales-current-previous-month", async (req, res) => {
     res.status(500).json({ error: "Error fetching sales data" });
   }
 });
+
+app.get('/api/order-stats', async (req, res) => {
+  try {
+      const [results] = await pool.query(`
+          SELECT 
+              COUNT(*) AS total_orders,
+              SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed_orders
+          FROM placing_orders
+      `);
+
+      res.json(results);
+  } catch (error) {
+      console.error('Error fetching order stats:', error);
+      res.status(500).json({ message: 'Failed to fetch order stats' });
+  }
+});
+app.get('/api/order-transit-count', async (req, res) => {
+  try {
+      const [rows] = await pool.query(
+          'SELECT COUNT(*) AS total_orders_transit FROM placing_orders WHERE status = ?',
+          ['In Transit']
+      );
+
+      res.json({ total_orders_transit: rows[0].total_orders_transit });
+  } catch (error) {
+      console.error('Error fetching order transit count:', error);
+      res.status(500).json({ error: 'Could not fetch order transit count. Please try again later.' });
+  }
+});
+
 
 
 
