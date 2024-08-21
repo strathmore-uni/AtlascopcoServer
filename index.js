@@ -85,6 +85,20 @@ if (process.env.NODE_ENV === "production") {
 } else {
   pool.host = process.env.INSTANCE_HOST;
 }
+
+
+
+const getAdminPermissions = async (userEmail) => {
+  const query = `
+    SELECT create_permission, update_permission,read_permission,delete_permission,manage_clearorder_permission
+    FROM admin_rights
+    JOIN registration ON registration.id = admin_rights.user_id
+    WHERE registration.email = ?
+  `;
+  const [results] = await pool.query(query, [userEmail]);
+  return results[0];
+};
+
 //////////////////////////////////////////users////////////////////////////////////////////
 app.post("/api/cart", async (req, res) => {
   const { userEmail, orderId } = req.body;
@@ -863,13 +877,21 @@ app.get("/api/orders/:orderId", async (req, res) => {
 // Add this route to your Express app
 app.put("/api/clearedorders/:orderId", async (req, res) => {
   const orderId = req.params.orderId;
+  const userEmail = req.body.userEmail; // Assuming you're passing the user's email in the request body
 
-  if (!orderId) {
-    return res.status(400).json({ error: "Order ID parameter is required" });
+  if (!orderId || !userEmail) {
+    return res.status(400).json({ error: "Order ID and user email are required" });
   }
 
   try {
-    // Update the order status to 'Cleared' (or whatever status you want)
+    // Fetch the admin's permissions
+    const adminPermissions = await getAdminPermissions(userEmail);
+
+    if (!adminPermissions.manage_clearorder_permission) {
+      return res.status(403).json({ error: "You do not have permission to clear orders" });
+    }
+
+    // Update the order status to 'Cleared'
     const [result] = await pool.query(
       `UPDATE placing_orders
        SET status = 'Cleared'
@@ -887,6 +909,7 @@ app.put("/api/clearedorders/:orderId", async (req, res) => {
     res.status(500).json({ error: "Error updating order status" });
   }
 });
+
 
 
 app.get("/api/search", async (req, res) => {
@@ -989,16 +1012,7 @@ app.get("/api/products/partnumber/:partnumber", async (req, res) => {
 //////////////////////////////////////users////////////////////////////////////////////////
 
 /////////////////////////Admin//////////////////////////////////////////////
-const getAdminPermissions = async (userEmail) => {
-  const query = `
-    SELECT create_permission, update_permission,read_permission,delete_permission
-    FROM admin_rights
-    JOIN registration ON registration.id = admin_rights.user_id
-    WHERE registration.email = ?
-  `;
-  const [results] = await pool.query(query, [userEmail]);
-  return results[0];
-};
+
 
 app.get("/api/admin/orders/count", async (req, res) => {
   const adminEmail = req.query.email;
@@ -3508,38 +3522,75 @@ app.get("/api/admin/orders/:orderId", async (req, res) => {
     res.status(500).json({ error: "Error fetching order details" });
   }
 });
-
 app.patch("/api/admin/orders/:orderId/status", async (req, res) => {
   const orderId = req.params.orderId;
-  const { status } = req.body;
+  const { status, userEmail } = req.body;
+
+  if (!userEmail || !status) {
+    return res.status(400).json({ message: "Invalid request data" });
+  }
 
   try {
-    // Update the order status
+    // Fetch user_id from userEmail
+    const [userResult] = await pool.query(
+      "SELECT id FROM registration WHERE email = ?",
+      [userEmail]
+    );
+
+    if (userResult.length === 0) {
+      console.log("User not found"); // Debugging line
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    const userId = userResult[0].id;
+    
+    // Fetch current user permissions
+    const [permissionsResult] = await pool.query(
+      "SELECT * FROM admin_rights WHERE user_id = ?",
+      [userId]
+    );
+
+    if (permissionsResult.length === 0) {
+      console.log("Admin permissions not found"); // Debugging line
+      return res.status(404).json({ message: "Admin permissions not found" });
+    }
+
+    const currentUser = permissionsResult[0];
+    
+    // Check if the current user has permission to manage orders
+    if (!currentUser.manage_orders_permission) {
+      console.log("Permission denied"); // Debugging line
+      return res.status(403).json({ message: "Forbidden: You do not have permission to manage orders" });
+    }
+
+
+    // Update order status
     const [result] = await pool.query(
       "UPDATE placing_orders SET status = ? WHERE id = ?",
       [status, orderId]
     );
 
     if (result.affectedRows === 0) {
+      console.log("Order not found"); // Debugging line
       return res.status(404).json({ message: "Order not found" });
     }
 
-    // Fetch the user email associated with this order
+    // Notify the user about the order status update
     const [orderResult] = await pool.query(
       "SELECT email FROM placing_orders WHERE id = ?",
       [orderId]
     );
 
     if (orderResult.length === 0) {
+      console.log("Order not found"); // Debugging line
       return res.status(404).json({ message: "Order not found" });
     }
 
-    const userEmail = orderResult[0].email;
+    const userOrderEmail = orderResult[0].email;
 
-    // Create a notification entry
     await pool.query(
       "INSERT INTO usernotifications (email, message) VALUES (?, ?)",
-      [`${userEmail}`, `Your order ${orderId} has been updated to ${status}`]
+      [`${userOrderEmail}`, `Your order ${orderId} has been updated to ${status}`]
     );
 
     res.status(200).json({
@@ -3550,6 +3601,9 @@ app.patch("/api/admin/orders/:orderId/status", async (req, res) => {
     res.status(500).json({ error: "Error updating order status" });
   }
 });
+
+
+
 
 app.get("/admin/loggedInUsersCount", (req, res) => {
   const sql =
@@ -4050,23 +4104,31 @@ app.post("/api/admin/permissions", async (req, res) => {
     read_permission,
     update_permission,
     delete_permission,
-    manage_users_permission, // New permission
-    manage_products_permission, // New permission
-    manage_orders_permission, // New permission
+    manage_users_permission,
+    manage_products_permission,
+    manage_orders_permission,
+    manage_clearorder_permission,
+    approve_permission,
+    pending_permission,
+    cancel_permission,
+    clear_permission,
   } = req.body;
 
   try {
+    // Check if permissions already exist for the user
     const [existingPermissions] = await pool.query(
       `SELECT * FROM admin_rights WHERE user_id = ?`,
       [user_id]
     );
 
     if (existingPermissions.length === 0) {
+      // Insert new permissions if they don't exist
       const [result] = await pool.query(
         `INSERT INTO admin_rights (
           user_id, role, create_permission, read_permission, update_permission, delete_permission,
-          manage_users_permission, manage_products_permission, manage_orders_permission
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          manage_users_permission, manage_products_permission, manage_orders_permission, manage_clearorder_permission,
+          approve_permission, pending_permission, cancel_permission, clear_permission
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           user_id,
           role,
@@ -4077,15 +4139,22 @@ app.post("/api/admin/permissions", async (req, res) => {
           manage_users_permission,
           manage_products_permission,
           manage_orders_permission,
+          manage_clearorder_permission,
+          approve_permission,
+          pending_permission,
+          cancel_permission,
+          clear_permission,
         ]
       );
       console.log("Permissions created successfully");
       res.json({ message: "Permissions created successfully" });
     } else {
+      // Update existing permissions
       const [result] = await pool.query(
         `UPDATE admin_rights
          SET role = ?, create_permission = ?, read_permission = ?, update_permission = ?, delete_permission = ?,
-             manage_users_permission = ?, manage_products_permission = ?, manage_orders_permission = ?
+             manage_users_permission = ?, manage_products_permission = ?, manage_orders_permission = ?, manage_clearorder_permission = ?,
+             approve_permission = ?, pending_permission = ?, cancel_permission = ?, clear_permission = ?
          WHERE user_id = ?`,
         [
           role,
@@ -4096,6 +4165,11 @@ app.post("/api/admin/permissions", async (req, res) => {
           manage_users_permission,
           manage_products_permission,
           manage_orders_permission,
+          manage_clearorder_permission,
+          approve_permission,
+          pending_permission,
+          cancel_permission,
+          clear_permission,
           user_id,
         ]
       );
@@ -4108,13 +4182,15 @@ app.post("/api/admin/permissions", async (req, res) => {
   }
 });
 
+
 app.get("/api/admin/permissions/:adminId", async (req, res) => {
   const { adminId } = req.params;
 
   try {
     const [rows] = await pool.query(
       `SELECT create_permission, read_permission, update_permission, delete_permission, role,
-              manage_users_permission, manage_products_permission, manage_orders_permission
+              manage_users_permission, manage_products_permission, manage_orders_permission, manage_clearorder_permission,
+              approve_permission, pending_permission, cancel_permission, clear_permission
        FROM admin_rights
        WHERE user_id = ?`,
       [adminId]
@@ -4611,6 +4687,39 @@ app.get('/api/order-transit-count', async (req, res) => {
   } catch (error) {
       console.error('Error fetching order transit count:', error);
       res.status(500).json({ error: 'Could not fetch order transit count. Please try again later.' });
+  }
+});
+
+app.get("/api/finance/orders/history", async (req, res) => {
+  const userEmail = req.query.email;
+
+  if (!userEmail) {
+    return res.status(400).json({ error: "Email parameter is required" });
+  }
+
+  try {
+    const [orders] = await pool.query(
+      `SELECT placing_orders.*, GROUP_CONCAT(JSON_OBJECT('description', oi.description, 'quantity', oi.quantity, 'price', oi.price)) as items
+       FROM placing_orders
+       LEFT JOIN order_items oi ON placing_orders.id = oi.order_id
+       WHERE placing_orders.email = ?
+       GROUP BY placing_orders.id`,
+      [userEmail]
+    );
+
+    if (orders.length === 0) {
+      return res.status(404).json({ message: "No orders found for this email" });
+    }
+
+    const formattedOrders = orders.map((order) => ({
+      ...order,
+      items: order.items ? JSON.parse(`[${order.items}]`) : [],
+    }));
+
+    res.status(200).json(formattedOrders);
+  } catch (error) {
+    console.error("Error fetching orders:", error);
+    res.status(500).json({ error: "Error fetching orders" });
   }
 });
 
