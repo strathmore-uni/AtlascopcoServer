@@ -90,14 +90,22 @@ if (process.env.NODE_ENV === "production") {
 
 const getAdminPermissions = async (userEmail) => {
   const query = `
-    SELECT create_permission, update_permission,read_permission,delete_permission,manage_clearorder_permission
+    SELECT create_permission, update_permission, read_permission, delete_permission, manage_clearorder_permission
     FROM admin_rights
     JOIN registration ON registration.id = admin_rights.user_id
     WHERE registration.email = ?
   `;
   const [results] = await pool.query(query, [userEmail]);
+
+  if (results.length === 0) {
+    console.error("No admin rights found for the user:", userEmail);
+    return null; // No admin rights found
+  }
+
+  
   return results[0];
 };
+
 
 //////////////////////////////////////////users////////////////////////////////////////////
 app.post("/api/cart", async (req, res) => {
@@ -813,7 +821,14 @@ app.get("/api/orders/history", async (req, res) => {
 
   try {
     const [orders] = await pool.query(
-      `SELECT placing_orders.*, GROUP_CONCAT(JSON_OBJECT('description', oi.description, 'quantity', oi.quantity, 'price', oi.price)) as items
+      `SELECT placing_orders.*, 
+              JSON_ARRAYAGG(
+                JSON_OBJECT(
+                  'description', oi.description, 
+                  'quantity', oi.quantity, 
+                  'price', oi.price
+                )
+              ) as items
        FROM placing_orders
        LEFT JOIN order_items oi ON placing_orders.id = oi.order_id
        WHERE placing_orders.email = ?
@@ -821,26 +836,17 @@ app.get("/api/orders/history", async (req, res) => {
       [userEmail]
     );
 
-    // If no orders found, return an empty array
     if (orders.length === 0) {
-      return res
-        .status(404)
-        .json({ message: "No orders found for this email" });
+      return res.status(404).json({ message: "No orders found for this email" });
     }
 
-    // Parse items JSON and format response
-    const formattedOrders = orders.map((order) => ({
-      ...order,
-      items: order.items ? JSON.parse(`[${order.items}]`) : [],
-    }));
-
-    // Respond with the fetched orders
-    res.status(200).json(formattedOrders);
+    res.status(200).json(orders);
   } catch (error) {
     console.error("Error fetching orders:", error);
     res.status(500).json({ error: "Error fetching orders" });
   }
 });
+
 
 app.get("/api/orders/:orderId", async (req, res) => {
   const orderId = req.params.orderId;
@@ -2549,11 +2555,17 @@ app.post("/api/newproducts/batch", async (req, res) => {
   const userEmail = req.headers["user-email"]; // Retrieve user email from headers
 
   if (!Array.isArray(products) || products.length === 0) {
-    return res.status(400).json({ error: "Invalid products data" });
+    return res.status(400).json({ error: "Invalid products data: Must be an array" });
   }
 
+  let connection;
+
   try {
+    // Check admin permissions
     const permissions = await getAdminPermissions(userEmail);
+    if (!permissions) {
+      return res.status(404).json({ error: "Admin rights not found for the user." });
+    }
 
     if (!permissions.create_permission) {
       return res
@@ -2561,7 +2573,7 @@ app.post("/api/newproducts/batch", async (req, res) => {
         .json({ error: "Permission denied: Cannot create products" });
     }
 
-    const connection = await pool.getConnection();
+    connection = await pool.getConnection();
     await connection.beginTransaction();
 
     for (const product of products) {
@@ -2576,6 +2588,29 @@ app.post("/api/newproducts/batch", async (req, res) => {
         mainCategory,
         subCategory,
       } = product;
+
+      // Validate essential product fields
+      if (
+        !partnumber ||
+        !description ||
+        !Array.isArray(prices) ||
+        prices.length === 0 ||
+        !mainCategory ||
+        !subCategory
+      ) {
+        return res.status(400).json({ error: "Invalid product data" });
+      }
+
+      // Validate and sanitize price data
+      const validPrices = prices.filter(
+        (price) => price.country_code && price.price != null
+      );
+      if (validPrices.length === 0) {
+        return res.status(400).json({ error: "Invalid prices data for a product" });
+      }
+
+      // Use sanitized stock value
+      const validStock = stock !== null && stock !== undefined ? stock : 0;
 
       // Insert product into the fulldata table
       const insertProductQuery = `
@@ -2597,11 +2632,11 @@ app.post("/api/newproducts/batch", async (req, res) => {
       // Insert prices into the product_prices table
       const insertPricesQuery =
         "INSERT INTO product_prices (product_id, country_code, price, stock_quantity) VALUES ?";
-      const priceValues = prices.map((price) => [
+      const priceValues = validPrices.map((price) => [
         productId,
         price.country_code,
         price.price,
-        stock, // assuming stock is the same for all countries
+        validStock,
       ]);
       await connection.query(insertPricesQuery, [priceValues]);
 
@@ -2617,13 +2652,25 @@ app.post("/api/newproducts/batch", async (req, res) => {
     await connection.commit();
     res.status(201).json({ message: "Products added successfully" });
   } catch (error) {
-    await connection.rollback();
-    console.error("Error adding products:", error);
+    if (connection) {
+      await connection.rollback();
+    }
+    console.error("Error adding products:", error.message); // More detailed error log
     res.status(500).json({ error: "Internal server error" });
   } finally {
-    connection.release();
+    if (connection) {
+      connection.release();
+    }
   }
 });
+
+
+
+
+
+
+
+
 
 app.get("/api/viewproducts", async (req, res) => {
   try {
@@ -4583,13 +4630,12 @@ app.get('/api/monthly-sales', async (req, res) => {
   try {
     const query = `
       SELECT 
-          YEAR(created_at) AS year, 
-          MONTH(created_at) AS month, 
-          SUM(CAST(totalprice AS DECIMAL(10, 2))) AS monthly_sales
-      FROM placing_orders
-      WHERE created_at BETWEEN ? AND ?
-      GROUP BY YEAR(created_at), MONTH(created_at)
-      ORDER BY YEAR(created_at), MONTH(created_at);
+    YEAR(created_at) AS year, 
+    MONTH(created_at) AS month, 
+    SUM(CAST(totalprice AS DECIMAL(10, 2))) AS monthly_sales
+FROM placing_orders
+GROUP BY YEAR(created_at), MONTH(created_at)
+ORDER BY YEAR(created_at), MONTH(created_at);
     `;
 
     const [results] = await pool.query(query, [startDate, endDate]);
@@ -4680,7 +4726,7 @@ app.get('/api/order-transit-count', async (req, res) => {
   try {
       const [rows] = await pool.query(
           'SELECT COUNT(*) AS total_orders_transit FROM placing_orders WHERE status = ?',
-          ['In Transit']
+          ['On Transit']
       );
 
       res.json({ total_orders_transit: rows[0].total_orders_transit });
