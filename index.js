@@ -95,16 +95,17 @@ const getAdminPermissions = async (userEmail) => {
     JOIN registration ON registration.id = admin_rights.user_id
     WHERE registration.email = ?
   `;
+  
   const [results] = await pool.query(query, [userEmail]);
 
-  if (results.length === 0) {
+  if (!results || results.length === 0) {
     console.error("No admin rights found for the user:", userEmail);
     return null; // No admin rights found
   }
 
-  
   return results[0];
 };
+
 
 
 //////////////////////////////////////////users////////////////////////////////////////////
@@ -2551,11 +2552,16 @@ app.post("/api/newproducts", async (req, res) => {
 });
 
 app.post("/api/newproducts/batch", async (req, res) => {
-  const products = req.body; // Expecting an array of products
+  const products = req.body.products; // Expecting an array of products
   const userEmail = req.headers["user-email"]; // Retrieve user email from headers
 
+  console.log("Received request to add new products.");
+  console.log("User email from headers:", userEmail);
+  console.log("Products data received:", JSON.stringify(products, null, 2)); // Log the data
+
   if (!Array.isArray(products) || products.length === 0) {
-    return res.status(400).json({ error: "Invalid products data: Must be an array" });
+    console.error("Invalid products data: Must be a non-empty array.");
+    return res.status(400).json({ error: "Invalid products data: Must be a non-empty array" });
   }
 
   let connection;
@@ -2563,14 +2569,16 @@ app.post("/api/newproducts/batch", async (req, res) => {
   try {
     // Check admin permissions
     const permissions = await getAdminPermissions(userEmail);
+    console.log("Admin permissions for user:", userEmail, permissions);
+
     if (!permissions) {
+      console.error("Admin rights not found for the user:", userEmail);
       return res.status(404).json({ error: "Admin rights not found for the user." });
     }
 
     if (!permissions.create_permission) {
-      return res
-        .status(403)
-        .json({ error: "Permission denied: Cannot create products" });
+      console.error("Permission denied: User does not have create permissions.");
+      return res.status(403).json({ error: "Permission denied: Cannot create products" });
     }
 
     connection = await pool.getConnection();
@@ -2578,84 +2586,51 @@ app.post("/api/newproducts/batch", async (req, res) => {
 
     for (const product of products) {
       const {
-        partnumber,
-        description,
-        image,
-        thumb1,
-        thumb2,
-        prices,
-        stock,
-        mainCategory,
-        subCategory,
+        partnumber = '',
+        description = '',
+        image = '',
+        thumb1 = '',
+        thumb2 = '',
+        prices = [],
+        stock = 0,
+        mainCategory = '',
+        subCategory = '',
       } = product;
 
-      // Validate essential product fields
-      if (
-        !partnumber ||
-        !description ||
-        !Array.isArray(prices) ||
-        prices.length === 0 ||
-        !mainCategory ||
-        !subCategory
-      ) {
-        return res.status(400).json({ error: "Invalid product data" });
-      }
-
-      // Validate and sanitize price data
-      const validPrices = prices.filter(
-        (price) => price.country_code && price.price != null
-      );
-      if (validPrices.length === 0) {
-        return res.status(400).json({ error: "Invalid prices data for a product" });
-      }
-
-      // Use sanitized stock value
-      const validStock = stock !== null && stock !== undefined ? stock : 0;
-
-      // Insert product into the fulldata table
-      const insertProductQuery = `
-        INSERT INTO fulldata (partnumber, Description, image, thumb1, thumb2, mainCategory, subCategory)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-      `;
-      const [result] = await connection.query(insertProductQuery, [
+      console.log('Inserting product:', {
         partnumber,
         description,
         image,
         thumb1,
         thumb2,
         mainCategory,
-        subCategory,
-      ]);
+        subCategory
+      });
 
-      const productId = result.insertId;
+      // Insert product into fulldata table
+      const productQuery = `INSERT INTO fulldata (partnumber, description, image, thumb1, thumb2, mainCategory, subCategory) VALUES (?, ?, ?, ?, ?, ?, ?)`;
+      const [result] = await connection.query(productQuery, [partnumber, description, image, thumb1, thumb2, mainCategory, subCategory]);
+      const productId = result.insertId; // Get the generated id
 
-      // Insert prices into the product_prices table
-      const insertPricesQuery =
-        "INSERT INTO product_prices (product_id, country_code, price, stock_quantity) VALUES ?";
-      const priceValues = validPrices.map((price) => [
-        productId,
-        price.country_code,
-        price.price,
-        validStock,
-      ]);
-      await connection.query(insertPricesQuery, [priceValues]);
+      console.log('Product inserted with ID:', productId);
 
-      // Log successful addition of product
-      const auditLogQuery = `
-        INSERT INTO product_audit_log (product_id, action, details, changed_by)
-        VALUES (?, 'insert', ?, ?)
-      `;
-      const details = `Inserted product: partnumber=${partnumber}, description=${description}, mainCategory=${mainCategory}, subCategory=${subCategory}`;
-      await connection.query(auditLogQuery, [productId, details, userEmail]);
+      // Insert prices into product_prices table
+      for (const price of prices) {
+        const { country_code, price: priceValue } = price;
+        const priceQuery = `INSERT INTO product_prices (product_id, country_code, price, stock_quantity) VALUES (?, ?, ?, ?)`;
+        console.log('Inserting price:', { productId, country_code, priceValue, stock });
+        await connection.query(priceQuery, [productId, country_code, priceValue, stock]);
+      }
     }
 
     await connection.commit();
+    console.log("All products added successfully. Transaction committed.");
     res.status(201).json({ message: "Products added successfully" });
   } catch (error) {
     if (connection) {
       await connection.rollback();
     }
-    console.error("Error adding products:", error.message); // More detailed error log
+    console.error("Error adding products:", error.message);
     res.status(500).json({ error: "Internal server error" });
   } finally {
     if (connection) {
@@ -2663,6 +2638,10 @@ app.post("/api/newproducts/batch", async (req, res) => {
     }
   }
 });
+
+
+
+
 
 
 
