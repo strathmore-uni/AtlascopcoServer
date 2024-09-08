@@ -109,6 +109,203 @@ const getAdminPermissions = async (userEmail) => {
 
 
 //////////////////////////////////////////users////////////////////////////////////////////
+app.get('/api/questions/:productId', async (req, res) => {
+  const { productId } = req.params;
+
+  try {
+    const query = `
+      SELECT q.id, q.questionText, q.userEmail, q.createdAt,
+             a.id AS answerId, a.answerText, a.userEmail AS answerUserEmail, a.createdAt AS answerCreatedAt
+      FROM Questions q
+      LEFT JOIN Answers a ON q.id = a.questionId
+      WHERE q.productId = ?
+      ORDER BY q.createdAt DESC, a.createdAt ASC;
+    `;
+    const [results] = await pool.query(query, [productId]);
+
+    // Group answers with their respective questions
+    const groupedResults = results.reduce((acc, row) => {
+      const questionIndex = acc.findIndex((q) => q.id === row.id);
+      const answer = row.answerId
+        ? {
+            id: row.answerId,
+            answerText: row.answerText,
+            userEmail: row.answerUserEmail,
+            createdAt: row.answerCreatedAt,
+          }
+        : null;
+
+      if (questionIndex === -1) {
+        acc.push({
+          id: row.id,
+          questionText: row.questionText,
+          userEmail: row.userEmail,
+          createdAt: row.createdAt,
+          answers: answer ? [answer] : [],
+        });
+      } else {
+        if (answer) {
+          acc[questionIndex].answers.push(answer);
+        }
+      }
+      return acc;
+    }, []);
+
+    res.json(groupedResults);
+  } catch (error) {
+    console.error('Error fetching questions:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Add a new question
+app.post('/api/questions', async (req, res) => {
+  const { productId, questionText, userEmail } = req.body;
+
+  try {
+    const query = 'INSERT INTO Questions (productId, questionText, userEmail) VALUES (?, ?, ?)';
+    const [result] = await pool.query(query, [productId, questionText, userEmail]);
+
+    res.status(201).json({ id: result.insertId, productId, questionText, userEmail, createdAt: new Date() });
+  } catch (error) {
+    console.error('Error adding question:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Add an answer to a question
+app.post('/api/questions/answer', async (req, res) => {
+  const { questionId, answerText, userEmail } = req.body;
+
+  try {
+    const query = 'INSERT INTO Answers (questionId, answerText, userEmail) VALUES (?, ?, ?)';
+    const [result] = await pool.query(query, [questionId, answerText, userEmail]);
+
+    res.status(201).json({ id: result.insertId, questionId, answerText, userEmail, createdAt: new Date() });
+  } catch (error) {
+    console.error('Error adding answer:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+// In your Express server file
+app.get('/api/relatedproducts/:productId', async (req, res) => {
+  const { productId } = req.params;
+
+  try {
+    // Fetch the category of the current product
+    const [currentProduct] = await pool.query('SELECT mainCategory, subCategory FROM fulldata WHERE id = ?', [productId]);
+    if (currentProduct.length === 0) {
+      return res.status(404).json({ error: 'Product not found' });
+    }
+    
+    const { mainCategory, subCategory } = currentProduct[0];
+    
+    // Fetch related products based on the mainCategory or subCategory
+    const [relatedProducts] = await pool.query(
+      `SELECT id, partnumber, Description, Price, image 
+       FROM fulldata 
+       WHERE id != ? AND (mainCategory = ? OR subCategory = ?)`,
+      [productId, mainCategory, subCategory]
+    );
+    
+    res.json(relatedProducts);
+  } catch (error) {
+    console.error('Error fetching related products:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+// In your Express app
+app.get('/api/reviews/:productId', async (req, res) => {
+  const { productId } = req.params;
+
+  try {
+    const query = 'SELECT * FROM Reviews WHERE productId = ?';
+    const [reviews] = await pool.query(query, [productId]);
+
+    res.json(reviews);
+  } catch (error) {
+    console.error('Error fetching reviews:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+app.post('/api/reviews', async (req, res) => {
+  const { productId, userEmail, rating, reviewText } = req.body;
+
+  try {
+    const query = 'INSERT INTO Reviews (productId, userEmail, rating, reviewText) VALUES (?, ?, ?, ?)';
+    const [result] = await pool.query(query, [productId, userEmail, rating, reviewText]);
+
+    res.status(201).json({ id: result.insertId, productId, userEmail, rating, reviewText });
+  } catch (error) {
+    console.error('Error adding review:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+// Assuming you're using Express and have a database connection setup
+app.get('/api/product/:id', async (req, res) => {
+  const productId = parseInt(req.params.id, 10); // Convert to integer if it's a numeric ID
+
+  if (isNaN(productId)) {
+    return res.status(400).json({ message: 'Invalid product ID' });
+  }
+
+  try {
+    const [rows] = await pool.query(
+      `SELECT f.*, pd.description
+       FROM fulldata f
+       LEFT JOIN product_descriptions pd ON f.id = pd.product_id
+       WHERE f.id = ?`,
+      [productId]
+    );
+    
+    if (rows.length > 0) {
+      res.json(rows[0]); // Return the first product if found
+    } else {
+      res.status(404).json({ message: 'Product not found' });
+    }
+  } catch (error) {
+    console.error('Error fetching product details:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+app.get('/api/spec/product/:id', async (req, res) => {
+  const productId = parseInt(req.params.id, 10); // Convert to integer if it's a numeric ID
+
+  if (isNaN(productId)) {
+    return res.status(400).json({ message: 'Invalid product ID' });
+  }
+
+  try {
+    const [productDetails] = await pool.query(
+      `SELECT spec_key, spec_value
+       FROM product_specifications
+       WHERE product_id = ?`,
+      [productId]
+    );
+
+    if (productDetails.length === 0) {
+      return res.status(404).json({ message: 'Product not found' });
+    }
+
+    const [specifications] = await pool.query(
+      `SELECT spec_key, spec_value
+       FROM product_specifications
+       WHERE product_id = ?`,
+      [productId]
+    );
+
+    res.json({
+      ...productDetails[0],
+      specifications
+    });
+  } catch (error) {
+    console.error('Error fetching product details:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+
+
 app.post("/api/cart", async (req, res) => {
   const { userEmail, orderId } = req.body;
 
@@ -555,6 +752,38 @@ app.post('/login', async (req, res) => {
     return res.status(500).json({ message: "Internal Server Error" });
   }
 });
+app.post('/api/reset-password', async (req, res) => {
+  const { email, newPassword } = req.body;
+
+  // Check if email and newPassword are provided
+  if (!email || !newPassword) {
+    return res.status(400).json({ message: 'Email and new password are required' });
+  }
+
+  try {
+    // Hash the new password
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+
+    // Update the password in the database
+    // Example using SQL, modify accordingly for other databases (e.g., MongoDB)
+    const result = await pool.query(
+      'UPDATE registration SET password = ? WHERE email = ?',
+      [hashedPassword, email]
+    );
+
+    // Check if any rows were updated
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    // Successfully updated
+    res.status(200).json({ message: 'Password reset successfully' });
+  } catch (error) {
+    console.error('Error resetting password:', error);
+    res.status(500).json({ message: 'An error occurred while resetting the password' });
+  }
+});
+
 
 // server.js or appropriate route file
 
@@ -1260,11 +1489,8 @@ app.get("/api/admin/orders/pending", async (req, res) => {
 
   try {
     // Fetch the admin's country and role from the registration table
-    const countryCodeQuery =
-      "SELECT country, role FROM registration WHERE email = ?";
-    const [countryCodeResult] = await pool.query(countryCodeQuery, [
-      adminEmail,
-    ]);
+    const countryCodeQuery = "SELECT country, role FROM registration WHERE email = ?";
+    const [countryCodeResult] = await pool.query(countryCodeQuery, [adminEmail]);
 
     if (countryCodeResult.length === 0) {
       return res.status(404).json({ error: "Admin not found" });
@@ -1275,7 +1501,9 @@ app.get("/api/admin/orders/pending", async (req, res) => {
     // Define the base query for fetching pending orders
     let getOrdersQuery = `
       SELECT placing_orders.*, 
-             GROUP_CONCAT(JSON_OBJECT('description', oi.description, 'quantity', oi.quantity, 'price', oi.price)) as items
+             JSON_ARRAYAGG(
+               JSON_OBJECT('description', oi.description, 'quantity', oi.quantity, 'price', oi.price)
+             ) as items
       FROM placing_orders
       LEFT JOIN order_items oi ON placing_orders.id = oi.order_id
       WHERE placing_orders.status = 'Pending'
@@ -1284,7 +1512,7 @@ app.get("/api/admin/orders/pending", async (req, res) => {
     let queryParams = [];
 
     // If the user is not a superadmin, filter by country
-    if (adminRole !== "superadmin" && adminCountryCode !== "SUPERADMIN") {
+    if (adminRole !== "superadmin") {
       getOrdersQuery += " AND placing_orders.country = ?";
       queryParams.push(adminCountryCode);
     }
@@ -1309,9 +1537,10 @@ app.get("/api/admin/orders/pending", async (req, res) => {
       return res.status(404).json({ message: "No pending orders found" });
     }
 
+    // Ensure that items are parsed correctly
     const formattedOrders = orders.map((order) => ({
       ...order,
-      items: order.items ? JSON.parse(`[${order.items}]`) : [],
+      items: Array.isArray(order.items) ? order.items : JSON.parse(order.items || "[]"),
       ordernumber: order.ordernumber,
     }));
 
@@ -1471,11 +1700,8 @@ app.get("/api/admin/orders/orders", async (req, res) => {
 
   try {
     // Fetch the admin's country and role from the registration table
-    const countryCodeQuery =
-      "SELECT country, role FROM registration WHERE email = ?";
-    const [countryCodeResult] = await pool.query(countryCodeQuery, [
-      adminEmail,
-    ]);
+    const countryCodeQuery = "SELECT country, role FROM registration WHERE email = ?";
+    const [countryCodeResult] = await pool.query(countryCodeQuery, [adminEmail]);
 
     if (countryCodeResult.length === 0) {
       return res.status(404).json({ error: "Admin not found" });
@@ -1486,8 +1712,9 @@ app.get("/api/admin/orders/orders", async (req, res) => {
     // Define the base query for fetching orders
     let getOrdersQuery = `
       SELECT placing_orders.*, 
-             GROUP_CONCAT(JSON_OBJECT('description', oi.description, 'quantity', oi.quantity, 'price', oi.price)) as items,
-             placing_orders.status
+             JSON_ARRAYAGG(
+               JSON_OBJECT('description', oi.description, 'quantity', oi.quantity, 'price', oi.price)
+             ) as items
       FROM placing_orders
       LEFT JOIN order_items oi ON placing_orders.id = oi.order_id
     `;
@@ -1496,13 +1723,11 @@ app.get("/api/admin/orders/orders", async (req, res) => {
 
     // Filter by country based on the admin's role and selected country
     if (adminRole === "superadmin") {
-      // Superadmins can see orders from any country
       if (selectedCountry) {
         getOrdersQuery += " WHERE placing_orders.country = ?";
         queryParams.push(selectedCountry);
       }
     } else if (adminRole === "admin" || adminRole === "warehouse") {
-      // Admins and warehouse admins see orders only for their assigned country
       if (selectedCountry) {
         getOrdersQuery += " WHERE placing_orders.country = ?";
         queryParams.push(selectedCountry);
@@ -1534,9 +1759,10 @@ app.get("/api/admin/orders/orders", async (req, res) => {
       return res.status(404).json({ message: "No orders found" });
     }
 
+    // Ensure that items are parsed correctly
     const formattedOrders = orders.map((order) => ({
       ...order,
-      items: order.items ? JSON.parse(`[${order.items}]`) : [],
+      items: Array.isArray(order.items) ? order.items : JSON.parse(order.items || "[]"), // Check if items are a valid array or parse
       orderNumber: order.ordernumber,
     }));
 
@@ -1546,6 +1772,8 @@ app.get("/api/admin/orders/orders", async (req, res) => {
     res.status(500).json({ error: "Error fetching orders" });
   }
 });
+
+
 app.get("/api/admin/orders/country-counts", async (req, res) => {
   const adminEmail = req.query.email;
   const startDate = req.query.startDate;
@@ -2555,10 +2783,7 @@ app.post("/api/newproducts/batch", async (req, res) => {
   const products = req.body.products; // Expecting an array of products
   const userEmail = req.headers["user-email"]; // Retrieve user email from headers
 
-  console.log("Received request to add new products.");
-  console.log("User email from headers:", userEmail);
-  console.log("Products data received:", JSON.stringify(products, null, 2)); // Log the data
-
+ 
   if (!Array.isArray(products) || products.length === 0) {
     console.error("Invalid products data: Must be a non-empty array.");
     return res.status(400).json({ error: "Invalid products data: Must be a non-empty array" });
@@ -2592,34 +2817,23 @@ app.post("/api/newproducts/batch", async (req, res) => {
         thumb1 = '',
         thumb2 = '',
         prices = [],
-        stock = 0,
         mainCategory = '',
         subCategory = '',
       } = product;
 
-      console.log('Inserting product:', {
-        partnumber,
-        description,
-        image,
-        thumb1,
-        thumb2,
-        mainCategory,
-        subCategory
-      });
+      
 
       // Insert product into fulldata table
       const productQuery = `INSERT INTO fulldata (partnumber, description, image, thumb1, thumb2, mainCategory, subCategory) VALUES (?, ?, ?, ?, ?, ?, ?)`;
       const [result] = await connection.query(productQuery, [partnumber, description, image, thumb1, thumb2, mainCategory, subCategory]);
       const productId = result.insertId; // Get the generated id
 
-      console.log('Product inserted with ID:', productId);
-
       // Insert prices into product_prices table
       for (const price of prices) {
-        const { country_code, price: priceValue } = price;
+        const { country_code, price: priceValue, stock_quantity } = price;
         const priceQuery = `INSERT INTO product_prices (product_id, country_code, price, stock_quantity) VALUES (?, ?, ?, ?)`;
-        console.log('Inserting price:', { productId, country_code, priceValue, stock });
-        await connection.query(priceQuery, [productId, country_code, priceValue, stock]);
+        console.log('Inserting price:', { productId, country_code, priceValue, stock_quantity });
+        await connection.query(priceQuery, [productId, country_code, priceValue, stock_quantity]);
       }
     }
 
@@ -2638,6 +2852,7 @@ app.post("/api/newproducts/batch", async (req, res) => {
     }
   }
 });
+
 
 
 
@@ -3247,11 +3462,8 @@ app.get("/api/registeredusers", async (req, res) => {
   }
 
   try {
-    const countryCodeQuery =
-      "SELECT country, role FROM registration WHERE email = ?";
-    const [countryCodeResult] = await pool.query(countryCodeQuery, [
-      adminEmail,
-    ]);
+    const countryCodeQuery = "SELECT country, role FROM registration WHERE email = ?";
+    const [countryCodeResult] = await pool.query(countryCodeQuery, [adminEmail]);
 
     if (countryCodeResult.length === 0) {
       return res.status(404).json({ error: "Admin not found" });
@@ -3259,30 +3471,35 @@ app.get("/api/registeredusers", async (req, res) => {
 
     const { country: adminCountryCode, role: adminRole } = countryCodeResult[0];
 
+    // Construct the base query and parameters
     let getUsersQuery = "SELECT * FROM registration";
-    let queryParams = [];
+    const queryParams = [];
 
-    // If the user is not a superadmin, filter by country
+    // Build the filtering conditions based on the admin role
     if (adminRole !== "superadmin") {
       getUsersQuery += " WHERE country = ?";
       queryParams.push(adminCountryCode);
     }
 
-    // Apply additional country filter if provided
+    // Apply the country filter if specified, modifying the query accordingly
     if (filterCountry) {
-      getUsersQuery +=
-        adminRole === "superadmin" ? " WHERE country = ?" : " AND country = ?";
+      if (adminRole === "superadmin") {
+        getUsersQuery += queryParams.length > 0 ? " AND country = ?" : " WHERE country = ?";
+      } else {
+        getUsersQuery += " AND country = ?";
+      }
       queryParams.push(filterCountry);
     }
 
     const [users] = await pool.query(getUsersQuery, queryParams);
-
     res.json(users);
   } catch (error) {
     console.error("Error fetching users:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 });
+
+
 
 // In your Express server file
 app.get("/api/newregisteredusers", async (req, res) => {
@@ -3550,65 +3767,69 @@ app.get("/api/admin/orders/:orderId", async (req, res) => {
 });
 app.patch("/api/admin/orders/:orderId/status", async (req, res) => {
   const orderId = req.params.orderId;
-  const { status, userEmail } = req.body;
+  const { status, userEmail } = req.body; // Ensure this is the logged-in admin's email
 
+  // Validate required fields
   if (!userEmail || !status) {
     return res.status(400).json({ message: "Invalid request data" });
   }
 
   try {
-    // Fetch user_id from userEmail
-    const [userResult] = await pool.query(
+    // Fetch admin user ID based on the logged-in admin's email
+    const [adminResult] = await pool.query(
       "SELECT id FROM registration WHERE email = ?",
       [userEmail]
     );
 
-    if (userResult.length === 0) {
-      console.log("User not found"); // Debugging line
-      return res.status(404).json({ message: "User not found" });
+    if (adminResult.length === 0) {
+  
+      return res.status(404).json({ message: "Admin not found" });
     }
 
-    const userId = userResult[0].id;
-    
-    // Fetch current user permissions
+    const adminId = adminResult[0].id;
+   
+
+    // Fetch admin permissions based on the admin's user ID
     const [permissionsResult] = await pool.query(
       "SELECT * FROM admin_rights WHERE user_id = ?",
-      [userId]
+      [adminId]
     );
 
     if (permissionsResult.length === 0) {
-      console.log("Admin permissions not found"); // Debugging line
+      
       return res.status(404).json({ message: "Admin permissions not found" });
     }
 
-    const currentUser = permissionsResult[0];
-    
-    // Check if the current user has permission to manage orders
-    if (!currentUser.manage_orders_permission) {
-      console.log("Permission denied"); // Debugging line
-      return res.status(403).json({ message: "Forbidden: You do not have permission to manage orders" });
+    const currentAdmin = permissionsResult[0];
+   
+
+    // Check permission to manage orders
+    if (!currentAdmin.manage_orders_permission) {
+   
+      return res
+        .status(403)
+        .json({ message: "Forbidden: You do not have permission to manage orders" });
     }
 
-
     // Update order status
-    const [result] = await pool.query(
+    const [updateResult] = await pool.query(
       "UPDATE placing_orders SET status = ? WHERE id = ?",
       [status, orderId]
     );
 
-    if (result.affectedRows === 0) {
-      console.log("Order not found"); // Debugging line
+    if (updateResult.affectedRows === 0) {
+    
       return res.status(404).json({ message: "Order not found" });
     }
 
-    // Notify the user about the order status update
+    // Notify the user about the status update
     const [orderResult] = await pool.query(
       "SELECT email FROM placing_orders WHERE id = ?",
       [orderId]
     );
 
     if (orderResult.length === 0) {
-      console.log("Order not found"); // Debugging line
+      
       return res.status(404).json({ message: "Order not found" });
     }
 
@@ -3627,6 +3848,9 @@ app.patch("/api/admin/orders/:orderId/status", async (req, res) => {
     res.status(500).json({ error: "Error updating order status" });
   }
 });
+
+
+
 
 
 
@@ -4024,7 +4248,7 @@ app.get("/api/admins", async (req, res) => {
     const [admins] = await pool.query(
       `SELECT id, firstName AS name, email, role
        FROM registration
-       WHERE role IN ('admin', 'superadmin','finance')`
+       WHERE role IN ('admin', 'superadmin','finance', 'warehouse')`
     );
 
     if (admins.length === 0) {
@@ -4627,6 +4851,51 @@ ORDER BY YEAR(created_at), MONTH(created_at);
   }
 });
 
+app.get('/api/daily-sales', async (req, res) => {
+  // Set the date range for this month and last month
+  const today = moment().format('YYYY-MM-DD');
+  const startOfThisMonth = moment().startOf('month').format('YYYY-MM-DD');
+  const startOfLastMonth = moment().subtract(1, 'month').startOf('month').format('YYYY-MM-DD');
+  const endOfLastMonth = moment().subtract(1, 'month').endOf('month').format('YYYY-MM-DD');
+
+  try {
+    // Query to get daily sales for this month
+    const queryThisMonth = `
+      SELECT 
+        DATE(created_at) AS date, 
+        SUM(CAST(totalprice AS DECIMAL(10, 2))) AS daily_sales
+      FROM placing_orders
+      WHERE created_at BETWEEN ? AND ?
+      GROUP BY DATE(created_at)
+      ORDER BY DATE(created_at);
+    `;
+
+    // Query to get daily sales for last month
+    const queryLastMonth = `
+      SELECT 
+        DATE(created_at) AS date, 
+        SUM(CAST(totalprice AS DECIMAL(10, 2))) AS daily_sales
+      FROM placing_orders
+      WHERE created_at BETWEEN ? AND ?
+      GROUP BY DATE(created_at)
+      ORDER BY DATE(created_at);
+    `;
+
+    // Execute the queries
+    const [resultsThisMonth] = await pool.query(queryThisMonth, [startOfThisMonth, today]);
+    const [resultsLastMonth] = await pool.query(queryLastMonth, [startOfLastMonth, endOfLastMonth]);
+
+    // Combine the results
+    return res.status(200).json({
+      thisMonth: resultsThisMonth,
+      lastMonth: resultsLastMonth,
+    });
+  } catch (error) {
+    console.error('Error fetching daily sales:', error);
+    return res.status(500).json({ error: 'An error occurred while fetching the data.' });
+  }
+});
+
 
 
 
@@ -4753,6 +5022,52 @@ app.get("/api/finance/orders/history", async (req, res) => {
 
 
 ////////////////////////////Finance/////////////////////////////////////////
+
+
+
+///////////////////////////settings//////////////////////////////////////////
+
+app.get('/api/settings/countries', async (req, res) => {
+  try {
+    const [rows] = await pool.query('SELECT * FROM countries');
+    res.json(rows);
+  } catch (error) {
+    console.error('Error fetching countries:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// Add a new country
+app.post('/api/add/countries', async (req, res) => {
+  const { code, name } = req.body;
+  try {
+    const [result] = await pool.query(
+      'INSERT INTO countries (code, name) VALUES (?, ?)',
+      [code, name]
+    );
+    const [rows] = await pool.query('SELECT * FROM countries WHERE code = ?', [code]);
+    res.status(201).json(rows[0]);
+  } catch (error) {
+    console.error('Error adding country:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// Delete a country
+app.delete('/api/remove/countries/:code', async (req, res) => {
+  const { code } = req.params;
+  try {
+    await pool.query('DELETE FROM countries WHERE code = ?', [code]);
+    res.status(204).end();
+  } catch (error) {
+    console.error('Error deleting country:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+
+
+///////////////////////////settings/////////////////////////////////////////
 
 const port = process.env.PORT || 3001;
 const server = http.createServer(app);
