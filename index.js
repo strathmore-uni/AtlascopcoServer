@@ -2890,8 +2890,7 @@ app.get("/api/viewproducts/:id", async (req, res) => {
 
   try {
     // Fetch the admin's country and role from the registration table
-    const countryQuery =
-      "SELECT country, role FROM registration WHERE email = ?";
+    const countryQuery = "SELECT country, role FROM registration WHERE email = ?";
     const [countryResult] = await pool.query(countryQuery, [adminEmail]);
 
     if (countryResult.length === 0) {
@@ -2902,7 +2901,7 @@ app.get("/api/viewproducts/:id", async (req, res) => {
 
     // Fetch product details
     const productQuery = `
-      SELECT id, partnumber, Description, image, thumb1, thumb2, mainCategory, subCategory
+      SELECT id, partnumber, Description, image, thumb1, thumb2, mainCategory, subCategory, detailedDescription
       FROM fulldata
       WHERE id = ?
     `;
@@ -2912,7 +2911,15 @@ app.get("/api/viewproducts/:id", async (req, res) => {
       return res.status(404).json({ error: "Product not found" });
     }
 
-    // Define the query for fetching product prices
+    // Fetch product specifications
+    const specificationsQuery = `
+      SELECT spec_key, spec_value
+      FROM product_specifications
+      WHERE product_id = ?
+    `;
+    const [specifications] = await pool.query(specificationsQuery, [productId]);
+
+    // Fetch product prices
     let pricesQuery = `
       SELECT country_code, price, stock_quantity
       FROM product_prices
@@ -2928,26 +2935,43 @@ app.get("/api/viewproducts/:id", async (req, res) => {
 
     const [prices] = await pool.query(pricesQuery, queryParams);
 
-    // Combine product details and filtered prices
-    res.json({ ...product[0], prices });
+    // Fetch product descriptions
+    const descriptionsQuery = `
+      SELECT description
+      FROM product_descriptions
+      WHERE product_id = ?
+    `;
+    const [descriptions] = await pool.query(descriptionsQuery, [productId]);
+
+    // Combine product details, specifications, descriptions, and filtered prices
+    res.json({
+      ...product[0],
+      specifications,
+      descriptions: descriptions.map(desc => desc.description),
+      prices
+    });
   } catch (error) {
     console.error("Error fetching product:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 });
 
+
+
 app.put("/api/viewproducts/:id", async (req, res) => {
   const productId = req.params.id;
   const {
     partnumber,
     Description,
+    descriptions = [], // Default to an empty array if not provided
+    specifications = [], // Default to an empty array if not provided
     image,
     thumb1,
     thumb2,
     mainCategory,
     subCategory,
-    prices,
-    email, // The email field sent from the frontend
+    prices = [], // Default to an empty array if not provided
+    email,
   } = req.body;
 
   console.log(`Received PUT request for product ID: ${productId}`);
@@ -2969,10 +2993,9 @@ app.put("/api/viewproducts/:id", async (req, res) => {
 
     // Check admin permissions before proceeding
     const adminPermissions = await getAdminPermissions(email);
-    console.log("Admin permissions:", adminPermissions); // Debug permission retrieval
+    console.log("Admin permissions:", adminPermissions);
 
     if (!adminPermissions || !adminPermissions.update_permission) {
-      // Log the failed attempt due to permission denial
       const deniedDetails = `Permission denied for user: ${email}`;
       const auditLogQueryDenied = `
         INSERT INTO product_audit_log (product_id, action, details, changed_by)
@@ -3004,23 +3027,68 @@ app.put("/api/viewproducts/:id", async (req, res) => {
       productId,
     ]);
 
-    // Delete existing prices for the product
-    const deletePricesQuery = `DELETE FROM product_prices WHERE product_id = ?`;
-    await connection.query(deletePricesQuery, [productId]);
+    // Update descriptions in the product_descriptions table
+    if (Array.isArray(descriptions)) {
+      // Delete existing descriptions for the product
+      const deleteDescriptionsQuery = `DELETE FROM product_descriptions WHERE product_id = ?`;
+      await connection.query(deleteDescriptionsQuery, [productId]);
 
-    // Insert or update prices and stock quantities
-    const insertOrUpdatePricesQuery = `
-      INSERT INTO product_prices (product_id, country_code, price, stock_quantity)
-      VALUES (?, ?, ?, ?)
-      ON DUPLICATE KEY UPDATE price = VALUES(price), stock_quantity = VALUES(stock_quantity);
-    `;
-    for (const price of prices) {
-      await connection.query(insertOrUpdatePricesQuery, [
-        productId,
-        price.country_code,
-        price.price,
-        price.stock_quantity,
-      ]);
+      // Insert new descriptions
+      const insertDescriptionQuery = `
+        INSERT INTO product_descriptions (product_id, description)
+        VALUES (?, ?)
+      `;
+      for (const desc of descriptions) {
+        await connection.query(insertDescriptionQuery, [productId, desc]);
+      }
+    } else {
+      console.warn("Descriptions provided is not an array. Skipping description update.");
+    }
+
+    // Update specifications in the product_specifications table
+    if (Array.isArray(specifications)) {
+      // Delete existing specifications for the product
+      const deleteSpecificationsQuery = `DELETE FROM product_specifications WHERE product_id = ?`;
+      await connection.query(deleteSpecificationsQuery, [productId]);
+
+      // Insert new specifications
+      const insertSpecificationQuery = `
+        INSERT INTO product_specifications (product_id, spec_key, spec_value)
+        VALUES (?, ?, ?)
+      `;
+      for (const spec of specifications) {
+        await connection.query(insertSpecificationQuery, [
+          productId,
+          spec.spec_key,
+          spec.spec_value,
+        ]);
+      }
+    } else {
+      console.warn("Specifications provided is not an array. Skipping specifications update.");
+    }
+
+    // Update prices in the product_prices table
+    if (Array.isArray(prices)) {
+      // Delete existing prices for the product
+      const deletePricesQuery = `DELETE FROM product_prices WHERE product_id = ?`;
+      await connection.query(deletePricesQuery, [productId]);
+
+      // Insert or update prices and stock quantities
+      const insertOrUpdatePricesQuery = `
+        INSERT INTO product_prices (product_id, country_code, price, stock_quantity)
+        VALUES (?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE price = VALUES(price), stock_quantity = VALUES(stock_quantity);
+      `;
+      for (const price of prices) {
+        await connection.query(insertOrUpdatePricesQuery, [
+          productId,
+          price.country_code,
+          price.price,
+          price.stock_quantity,
+        ]);
+      }
+    } else {
+      console.warn("Prices provided is not an array. Skipping price update.");
     }
 
     // Log the successful update action
@@ -3047,6 +3115,8 @@ app.put("/api/viewproducts/:id", async (req, res) => {
     connection.release();
   }
 });
+
+
 
 app.delete("/api/viewproducts/:id", async (req, res) => {
   const productId = parseInt(req.params.id, 10); // Ensure productId is an integer
