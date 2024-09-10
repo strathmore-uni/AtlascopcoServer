@@ -4788,6 +4788,44 @@ app.get("/api/admin-email", async (req, res) => {
   }
 });
 
+// Fetch orders by email
+// Ensure your backend route is correctly defined as shown below
+app.get('/api/order-history/:email', (req, res) => {
+  const { email } = req.params;
+  console.log(`Received request for order history: ${email}`); // Log to confirm request received
+
+  const query = `SELECT * FROM placing_orders WHERE email = ?`;
+
+  // Log before the query execution
+  console.log(`Executing query: ${query} with email: ${email}`);
+
+  pool.query(query, [email], (err, results) => {
+    // Log immediately after the query is executed
+    console.log('Query executed');
+
+    if (err) {
+      console.error('Error fetching orders:', err);
+      return res.status(500).json({ error: 'Internal Server Error' });
+    }
+
+    // Log the results fetched
+    console.log('Fetched Results:', results);
+
+    if (results.length === 0) {
+      return res.status(404).json({ message: 'No orders found for this email.' });
+    }
+
+    // Log just before sending the response
+    console.log('Sending response to client');
+    res.json(results);
+  });
+});
+
+
+
+
+
+
 //////////////////////////////Admin/////////////////////////////////////////
 
 
