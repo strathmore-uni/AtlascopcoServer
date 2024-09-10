@@ -4620,34 +4620,51 @@ app.get("/api/product-audit-logs", async (req, res) => {
 });
 
 app.get("/api/admin/productOrderCount/:partnumber", async (req, res) => {
-  const { partnumber } = req.params; // Get partnumber from URL parameters
+  const { partnumber } = req.params;
 
   if (!partnumber) {
     return res.status(400).json({ error: "Part number is required" });
   }
 
   try {
-    // Query to get the total quantity ordered for the specified partnumber
-    const [rows] = await pool.query(
+    // Query to get sales data grouped by month
+    const [salesData] = await pool.query(
       `
-      SELECT partnumber, SUM(quantity) as total_quantity
+      SELECT DATE_FORMAT(created_at, '%Y-%m') as month, SUM(quantity) as total_quantity
       FROM order_items
       WHERE partnumber = ?
-      GROUP BY partnumber
+      GROUP BY DATE_FORMAT(created_at, '%Y-%m')
+      ORDER BY DATE_FORMAT(created_at, '%Y-%m')
     `,
       [partnumber]
     );
 
-    if (rows.length === 0) {
-      return res.status(404).json({ error: "Product not found" });
+    // If no data is found
+    if (salesData.length === 0) {
+      return res.status(404).json({ error: "Product not found or no sales data available" });
     }
 
-    res.json(rows[0]); // Send the result as JSON
+    // Calculate total quantity
+    const totalQuantity = salesData.reduce((sum, record) => sum + record.total_quantity, 0);
+
+    // Return detailed response
+    res.json({
+      partnumber,
+      totalQuantity,
+      salesData,
+      metadata: {
+        recordCount: salesData.length,
+        startMonth: salesData[0].month,
+        endMonth: salesData[salesData.length - 1].month,
+      }
+    });
   } catch (error) {
     console.error("Error fetching order count for product:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 });
+
+
 
 // In your Express app
 app.post("/api/admin_rights/update", async (req, res) => {
