@@ -508,6 +508,28 @@ app.get("/api/user/notifications", async (req, res) => {
     res.status(500).json({ error: "Error fetching notifications" });
   }
 });
+app.patch("/api/user/notifications/:notificationId/read", async (req, res) => {
+  const notificationId = req.params.notificationId;
+
+  try {
+    // Update the read status of the notification
+    const [result] = await pool.query(
+      "UPDATE usernotifications SET `read` = 1 WHERE id = ?",
+      [notificationId]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: "Notification not found" });
+    }
+
+    res.status(200).json({ message: "Notification marked as read" });
+  } catch (error) {
+    console.error("Error updating notification status:", error);
+    res.status(500).json({ error: "Error updating notification status" });
+  }
+});
+
+
 
 const validateInput = (req, res, next) => {
   const schema = Joi.object({
@@ -785,7 +807,7 @@ app.post('/api/reset-password', async (req, res) => {
 });
 
 
-// server.js or appropriate route file
+
 
 app.post('/api/admin/suspend', async (req, res) => {
   const { adminId, suspend } = req.body;
@@ -3814,7 +3836,7 @@ app.get("/api/admin/orders/:orderId", async (req, res) => {
   try {
     const orderId = req.params.orderId;
     const [orders] = await pool.query(
-      `SELECT placing_orders.ordernumber, placing_orders.email, placing_orders.totalprice, placing_orders.Status,
+      `SELECT placing_orders.ordernumber, placing_orders.email, placing_orders.totalprice, placing_orders.Status, placing_orders.created_at,placing_orders.city,
               GROUP_CONCAT(JSON_OBJECT('id', oi.id, 'description', oi.description, 'quantity', oi.quantity, 'price', oi.price)) as items
        FROM placing_orders
        LEFT JOIN order_items oi ON placing_orders.id = oi.order_id
@@ -3852,12 +3874,10 @@ app.patch("/api/admin/orders/:orderId/status", async (req, res) => {
     );
 
     if (adminResult.length === 0) {
-  
       return res.status(404).json({ message: "Admin not found" });
     }
 
     const adminId = adminResult[0].id;
-   
 
     // Fetch admin permissions based on the admin's user ID
     const [permissionsResult] = await pool.query(
@@ -3866,16 +3886,13 @@ app.patch("/api/admin/orders/:orderId/status", async (req, res) => {
     );
 
     if (permissionsResult.length === 0) {
-      
       return res.status(404).json({ message: "Admin permissions not found" });
     }
 
     const currentAdmin = permissionsResult[0];
-   
 
     // Check permission to manage orders
     if (!currentAdmin.manage_orders_permission) {
-   
       return res
         .status(403)
         .json({ message: "Forbidden: You do not have permission to manage orders" });
@@ -3888,26 +3905,25 @@ app.patch("/api/admin/orders/:orderId/status", async (req, res) => {
     );
 
     if (updateResult.affectedRows === 0) {
-    
       return res.status(404).json({ message: "Order not found" });
     }
 
-    // Notify the user about the status update
+    // Fetch the order number and user email for notification
     const [orderResult] = await pool.query(
-      "SELECT email FROM placing_orders WHERE id = ?",
+      "SELECT email, ordernumber FROM placing_orders WHERE id = ?",
       [orderId]
     );
 
     if (orderResult.length === 0) {
-      
       return res.status(404).json({ message: "Order not found" });
     }
 
-    const userOrderEmail = orderResult[0].email;
+    const { email: userOrderEmail, ordernumber } = orderResult[0];
 
+    // Insert notification with the order number
     await pool.query(
       "INSERT INTO usernotifications (email, message) VALUES (?, ?)",
-      [`${userOrderEmail}`, `Your order ${orderId} has been updated to ${status}`]
+      [`${userOrderEmail}`, `Your order ${ordernumber} has been updated to ${status}`]
     );
 
     res.status(200).json({
@@ -3918,6 +3934,7 @@ app.patch("/api/admin/orders/:orderId/status", async (req, res) => {
     res.status(500).json({ error: "Error updating order status" });
   }
 });
+
 
 
 
@@ -4821,6 +4838,50 @@ app.get('/api/order-history/:email', (req, res) => {
   });
 });
 
+// Assuming you are using Express.js and have set up your pool for database connection
+app.get("/api/company-sales-comparison", async (req, res) => {
+  const adminEmail = req.query.email;
+
+  if (!adminEmail) {
+    return res.status(401).json({ error: "Unauthorized: No email provided" });
+  }
+
+  try {
+    // Fetch the admin's country and role from the registration table
+    const countryCodeQuery = "SELECT country, role FROM registration WHERE email = ?";
+    const [countryCodeResult] = await pool.query(countryCodeQuery, [adminEmail]);
+
+    if (countryCodeResult.length === 0) {
+      return res.status(404).json({ error: "Admin not found" });
+    }
+
+    const { country: adminCountryCode, role: adminRole } = countryCodeResult[0];
+
+    // Define the query to fetch sales by company in the admin's country
+    let getSalesQuery = `
+      SELECT company_name, SUM(CAST(totalprice AS DECIMAL(10, 2))) AS total_sales
+      FROM placing_orders
+      WHERE country = ?
+      GROUP BY company_name
+      ORDER BY total_sales DESC
+    `;
+
+    // Superadmins can see data for all countries; others see only their country
+    const queryParams = [adminRole === "superadmin" ? "%" : adminCountryCode];
+
+    const [sales] = await pool.query(getSalesQuery, queryParams);
+
+    if (sales.length === 0) {
+      return res.status(404).json({ message: "No sales data found for the specified country" });
+    }
+
+    res.status(200).json(sales);
+  } catch (error) {
+    console.error("Error fetching company sales comparison:", error);
+    res.status(500).json({ error: "Error fetching sales data" });
+  }
+});
+
 
 
 
@@ -4858,7 +4919,8 @@ app.get('/api/exchange-rates', async (req, res) => {
 });
 app.get("/api/finance-sales-by-month", async (req, res) => {
   const adminEmail = req.query.email;
-  const filterMonth = req.query.month; // Format: YYYY-MM
+  const startMonth = req.query.startMonth; // Format: YYYY-MM (start of the range)
+  const endMonth = req.query.endMonth; // Format: YYYY-MM (end of the range)
 
   if (!adminEmail) {
     return res.status(401).json({ error: "Unauthorized: No email provided" });
@@ -4868,9 +4930,7 @@ app.get("/api/finance-sales-by-month", async (req, res) => {
     // Fetch the admin's country and role from the registration table
     const countryCodeQuery =
       "SELECT country, role FROM registration WHERE email = ?";
-    const [countryCodeResult] = await pool.query(countryCodeQuery, [
-      adminEmail,
-    ]);
+    const [countryCodeResult] = await pool.query(countryCodeQuery, [adminEmail]);
 
     if (countryCodeResult.length === 0) {
       return res.status(404).json({ error: "Admin not found" });
@@ -4886,14 +4946,15 @@ app.get("/api/finance-sales-by-month", async (req, res) => {
 
     let queryParams = [];
 
-    // Filter by the specified month, or default to the current month
-    if (filterMonth) {
-      getSalesQuery += " WHERE DATE_FORMAT(created_at, '%Y-%m') = ?";
-      queryParams.push(filterMonth);
+    // Filter by the specified date range, or default to the current year
+    if (startMonth && endMonth) {
+      getSalesQuery += " WHERE DATE_FORMAT(created_at, '%Y-%m') BETWEEN ? AND ?";
+      queryParams.push(startMonth, endMonth);
     } else {
-      const currentMonth = new Date();
-      getSalesQuery += " WHERE YEAR(created_at) = ? AND MONTH(created_at) = ?";
-      queryParams.push(currentMonth.getFullYear(), currentMonth.getMonth() + 1);
+      // Default to the current year if no range is provided
+      const currentYear = new Date().getFullYear();
+      getSalesQuery += " WHERE YEAR(created_at) = ?";
+      queryParams.push(currentYear);
     }
 
     // Filter by country based on the admin's role
@@ -4908,7 +4969,9 @@ app.get("/api/finance-sales-by-month", async (req, res) => {
     const [sales] = await pool.query(getSalesQuery, queryParams);
 
     if (sales.length === 0) {
-      return res.status(404).json({ message: "No sales found for the specified period" });
+      return res
+        .status(404)
+        .json({ message: "No sales found for the specified period" });
     }
 
     res.status(200).json(sales);
@@ -4917,6 +4980,7 @@ app.get("/api/finance-sales-by-month", async (req, res) => {
     res.status(500).json({ error: "Error fetching sales data" });
   }
 });
+
 app.get('/api/weekly-sales', async (req, res) => {
   const { start_date, end_date } = req.query;
 
