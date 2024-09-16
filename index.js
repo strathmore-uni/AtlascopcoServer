@@ -109,21 +109,28 @@ const getAdminPermissions = async (userEmail) => {
 
 
 //////////////////////////////////////////users////////////////////////////////////////////
-app.get('/api/questions/:productId', async (req, res) => {
-  const { productId } = req.params;
+app.get('/api/questions', async (req, res) => {
+  const { productId } = req.query; // productId is optional for admin
 
   try {
-    const query = `
+    let query = `
       SELECT q.id, q.questionText, q.userEmail, q.createdAt,
              a.id AS answerId, a.answerText, a.userEmail AS answerUserEmail, a.createdAt AS answerCreatedAt
       FROM Questions q
       LEFT JOIN Answers a ON q.id = a.questionId
-      WHERE q.productId = ?
-      ORDER BY q.createdAt DESC, a.createdAt ASC;
     `;
-    const [results] = await pool.query(query, [productId]);
 
-    // Group answers with their respective questions
+    const queryParams = [];
+    if (productId) {
+      query += ' WHERE q.productId = ?';
+      queryParams.push(productId);
+    }
+
+    query += ' ORDER BY q.createdAt DESC, a.createdAt ASC';
+
+    const [results] = await pool.query(query, queryParams);
+
+    // Group questions and answers (same as before)
     const groupedResults = results.reduce((acc, row) => {
       const questionIndex = acc.findIndex((q) => q.id === row.id);
       const answer = row.answerId
@@ -157,6 +164,87 @@ app.get('/api/questions/:productId', async (req, res) => {
     res.status(500).json({ error: 'Internal server error' });
   }
 });
+app.get('/api/admin/questions', async (req, res) => {
+  const { productId } = req.query; // productId is optional for admin
+
+  try {
+    let query = `
+      SELECT q.id, q.questionText, q.userEmail, q.createdAt,
+             a.id AS answerId, a.answerText, a.userEmail AS answerUserEmail, a.createdAt AS answerCreatedAt,
+             f.partnumber, f.Description
+      FROM Questions q
+      LEFT JOIN Answers a ON q.id = a.questionId
+      LEFT JOIN fulldata f ON q.productId = f.id
+    `;
+
+    const queryParams = [];
+    if (productId) {
+      query += ' WHERE q.productId = ?';
+      queryParams.push(productId);
+    }
+
+    query += ' ORDER BY q.createdAt DESC, a.createdAt ASC';
+
+    const [results] = await pool.query(query, queryParams);
+
+    // Group questions and answers (same as before)
+    const groupedResults = results.reduce((acc, row) => {
+      const questionIndex = acc.findIndex((q) => q.id === row.id);
+      const answer = row.answerId
+        ? {
+            id: row.answerId,
+            answerText: row.answerText,
+            userEmail: row.answerUserEmail,
+            createdAt: row.answerCreatedAt,
+          }
+        : null;
+
+      if (questionIndex === -1) {
+        acc.push({
+          id: row.id,
+          questionText: row.questionText,
+          userEmail: row.userEmail,
+          createdAt: row.createdAt,
+          partnumber: row.partnumber,
+          Description: row.Description,
+          answers: answer ? [answer] : [],
+        });
+      } else {
+        if (answer) {
+          acc[questionIndex].answers.push(answer);
+        }
+      }
+      return acc;
+    }, []);
+
+    res.json(groupedResults);
+  } catch (error) {
+    console.error('Error fetching questions:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+app.post('/api/questions/star', async (req, res) => {
+  const { questionId } = req.body;
+
+  try {
+    await pool.query('UPDATE questions SET starred = TRUE WHERE id = ?', [questionId]);
+    res.status(200).json({ message: 'Question starred successfully' });
+  } catch (error) {
+    console.error('Error starring question:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+app.post('/api/questions/unstar', async (req, res) => {
+  const { questionId } = req.body;
+
+  try {
+    await pool.query('UPDATE questions SET starred = FALSE WHERE id = ?', [questionId]);
+    res.status(200).json({ message: 'Question unstarred successfully' });
+  } catch (error) {
+    console.error('Error unstarring question:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
 
 // Add a new question
 app.post('/api/questions', async (req, res) => {
@@ -169,6 +257,68 @@ app.post('/api/questions', async (req, res) => {
     res.status(201).json({ id: result.insertId, productId, questionText, userEmail, createdAt: new Date() });
   } catch (error) {
     console.error('Error adding question:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.get('/api/questions/:productId', async (req, res) => {
+  const { productId } = req.params;
+
+  try {
+    const query = `
+      SELECT q.id, q.questionText, q.userEmail, q.createdAt,
+             a.id AS answerId, a.answerText, a.userEmail AS answerUserEmail, a.createdAt AS answerCreatedAt,
+             p.partnumber, p.Description
+      FROM Questions q
+      LEFT JOIN Answers a ON q.id = a.questionId
+      LEFT JOIN fulldata p ON q.productId = p.id
+      WHERE q.productId = ?
+      ORDER BY q.createdAt DESC, a.createdAt ASC;
+    `;
+    const [results] = await pool.query(query, [productId]);
+
+    // Group answers with their respective questions
+    const groupedResults = results.reduce((acc, row) => {
+      const questionIndex = acc.findIndex((q) => q.id === row.id);
+      const answer = row.answerId
+        ? {
+            id: row.answerId,
+            answerText: row.answerText,
+            userEmail: row.answerUserEmail,
+            createdAt: row.answerCreatedAt,
+          }
+        : null;
+
+      if (questionIndex === -1) {
+        acc.push({
+          id: row.id,
+          questionText: row.questionText,
+          userEmail: row.userEmail,
+          createdAt: row.createdAt,
+          partNumber: row.partNumber, // Add part number
+          description: row.description, // Add description
+          answers: answer ? [answer] : [],
+        });
+      } else {
+        if (answer) {
+          acc[questionIndex].answers.push(answer);
+        }
+      }
+      return acc;
+    }, []);
+
+    res.json(groupedResults);
+  } catch (error) {
+    console.error('Error fetching questions:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+app.get('/api/questions/starred', async (req, res) => {
+  try {
+    const [results] = await pool.query('SELECT * FROM questions WHERE starred = TRUE');
+    res.json(results);
+  } catch (error) {
+    console.error('Error fetching starred questions:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -1763,13 +1913,13 @@ app.get("/api/admin/orders/orders", async (req, res) => {
     if (startDate) {
       getOrdersQuery += queryParams.length ? " AND" : " WHERE";
       getOrdersQuery += " placing_orders.created_at >= ?";
-      queryParams.push(new Date(startDate));
+      queryParams.push(new Date(startDate).toISOString());
     }
 
     if (endDate) {
       getOrdersQuery += queryParams.length ? " AND" : " WHERE";
       getOrdersQuery += " placing_orders.created_at <= ?";
-      queryParams.push(new Date(endDate));
+      queryParams.push(new Date(endDate).toISOString());
     }
 
     // Group the results by order ID
@@ -1781,12 +1931,24 @@ app.get("/api/admin/orders/orders", async (req, res) => {
       return res.status(404).json({ message: "No orders found" });
     }
 
+  
     // Ensure that items are parsed correctly
-    const formattedOrders = orders.map((order) => ({
-      ...order,
-      items: Array.isArray(order.items) ? order.items : JSON.parse(order.items || "[]"), // Check if items are a valid array or parse
-      orderNumber: order.ordernumber,
-    }));
+    const formattedOrders = orders.map((order) => {
+      // If items is already an array, no need to parse
+      let parsedItems;
+      try {
+        parsedItems = typeof order.items === 'string' ? JSON.parse(order.items) : order.items;
+      } catch (error) {
+        console.error("Error parsing items:", error);
+        parsedItems = [];
+      }
+
+      return {
+        ...order,
+        items: parsedItems,
+        orderNumber: order.ordernumber,
+      };
+    });
 
     res.status(200).json(formattedOrders);
   } catch (error) {
@@ -1794,6 +1956,8 @@ app.get("/api/admin/orders/orders", async (req, res) => {
     res.status(500).json({ error: "Error fetching orders" });
   }
 });
+
+
 
 
 app.get("/api/admin/orders/country-counts", async (req, res) => {
@@ -3836,8 +4000,11 @@ app.get("/api/admin/orders/:orderId", async (req, res) => {
   try {
     const orderId = req.params.orderId;
     const [orders] = await pool.query(
-      `SELECT placing_orders.ordernumber, placing_orders.email, placing_orders.totalprice, placing_orders.Status, placing_orders.created_at,placing_orders.city,
-              GROUP_CONCAT(JSON_OBJECT('id', oi.id, 'description', oi.description, 'quantity', oi.quantity, 'price', oi.price)) as items
+      `SELECT placing_orders.ordernumber, placing_orders.email, placing_orders.totalprice, placing_orders.Status, placing_orders.created_at, placing_orders.city,
+              CONCAT('[', GROUP_CONCAT(
+                JSON_OBJECT('id', oi.id, 'description', oi.description, 'quantity', oi.quantity, 'price', oi.price)
+                SEPARATOR ','
+              ), ']') as items
        FROM placing_orders
        LEFT JOIN order_items oi ON placing_orders.id = oi.order_id
        WHERE placing_orders.id = ?
@@ -3850,13 +4017,30 @@ app.get("/api/admin/orders/:orderId", async (req, res) => {
     }
 
     const order = orders[0];
-    order.items = order.items ? JSON.parse(`[${order.items}]`) : [];
+   
+    // Check if items is a string and properly enclosed in brackets
+    if (typeof order.items === 'string') {
+      try {
+        // Attempt to parse the JSON string
+        order.items = JSON.parse(order.items);
+      } catch (parseError) {
+        console.error("Error parsing items JSON:", parseError);
+        // Default to an empty array if parsing fails
+        order.items = [];
+      }
+    } else {
+      order.items = [];
+    }
+
     res.status(200).json(order);
   } catch (error) {
     console.error("Error fetching order details:", error);
     res.status(500).json({ error: "Error fetching order details" });
   }
 });
+
+
+
 app.patch("/api/admin/orders/:orderId/status", async (req, res) => {
   const orderId = req.params.orderId;
   const { status, userEmail } = req.body; // Ensure this is the logged-in admin's email
