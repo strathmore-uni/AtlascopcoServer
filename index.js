@@ -3017,10 +3017,15 @@ app.post("/api/newproducts/batch", async (req, res) => {
       // Insert prices into product_prices table
       for (const price of prices) {
         const { country_code, price: priceValue, stock_quantity } = price;
+      
+        // Ensure stock_quantity is not null or undefined
+        const finalStockQuantity = stock_quantity != null ? stock_quantity : 0;
+      
         const priceQuery = `INSERT INTO product_prices (product_id, country_code, price, stock_quantity) VALUES (?, ?, ?, ?)`;
-        console.log('Inserting price:', { productId, country_code, priceValue, stock_quantity });
-        await connection.query(priceQuery, [productId, country_code, priceValue, stock_quantity]);
+        console.log('Inserting price:', { productId, country_code, priceValue, finalStockQuantity });
+        await connection.query(priceQuery, [productId, country_code, priceValue, finalStockQuantity]);
       }
+      
     }
 
     await connection.commit();
