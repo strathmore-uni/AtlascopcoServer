@@ -1734,11 +1734,8 @@ app.get("/api/admin/orders/approved", async (req, res) => {
 
   try {
     // Fetch the admin's country and role from the registration table
-    const countryCodeQuery =
-      "SELECT country, role FROM registration WHERE email = ?";
-    const [countryCodeResult] = await pool.query(countryCodeQuery, [
-      adminEmail,
-    ]);
+    const countryCodeQuery = "SELECT country, role FROM registration WHERE email = ?";
+    const [countryCodeResult] = await pool.query(countryCodeQuery, [adminEmail]);
 
     if (countryCodeResult.length === 0) {
       return res.status(404).json({ error: "Admin not found" });
@@ -1749,16 +1746,18 @@ app.get("/api/admin/orders/approved", async (req, res) => {
     // Define the base query for fetching pending orders
     let getOrdersQuery = `
       SELECT placing_orders.*, 
-             GROUP_CONCAT(JSON_OBJECT('description', oi.description, 'quantity', oi.quantity, 'price', oi.price)) as items
+             JSON_ARRAYAGG(
+               JSON_OBJECT('description', oi.description, 'quantity', oi.quantity, 'price', oi.price)
+             ) as items
       FROM placing_orders
       LEFT JOIN order_items oi ON placing_orders.id = oi.order_id
-      WHERE placing_orders.status = 'Approved'
+      WHERE placing_orders.status = 'approved'
     `;
 
     let queryParams = [];
 
     // If the user is not a superadmin, filter by country
-    if (adminRole !== "superadmin" && adminCountryCode !== "SUPERADMIN") {
+    if (adminRole !== "superadmin") {
       getOrdersQuery += " AND placing_orders.country = ?";
       queryParams.push(adminCountryCode);
     }
@@ -1783,9 +1782,10 @@ app.get("/api/admin/orders/approved", async (req, res) => {
       return res.status(404).json({ message: "No pending orders found" });
     }
 
+    // Ensure that items are parsed correctly
     const formattedOrders = orders.map((order) => ({
       ...order,
-      items: order.items ? JSON.parse(`[${order.items}]`) : [],
+      items: Array.isArray(order.items) ? order.items : JSON.parse(order.items || "[]"),
       ordernumber: order.ordernumber,
     }));
 
@@ -1795,6 +1795,7 @@ app.get("/api/admin/orders/approved", async (req, res) => {
     res.status(500).json({ error: "Error fetching pending orders" });
   }
 });
+
 
 app.get("/api/admin/orders/cancelled", async (req, res) => {
   const adminEmail = req.query.email;
