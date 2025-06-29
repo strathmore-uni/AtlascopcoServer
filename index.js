@@ -5596,35 +5596,3 @@ app.get("/api/test-connection", async (req, res) => {
     res.status(500).send(err);
   }
 });
-
-// ================= BI REPORTS: Revenue Report Endpoint =================
-app.get('/api/admin/revenue-report', async (req, res) => {
-  // Example: Accept date range as query params
-  const { from, to } = req.query;
-
-  // TODO: Replace with real DB queries
-  // Mock data for demonstration
-  const monthlyRevenue = [
-    { month: 'Jan', revenue: 12000 },
-    { month: 'Feb', revenue: 15000 },
-    { month: 'Mar', revenue: 18000 },
-    { month: 'Apr', revenue: 14000 },
-    { month: 'May', revenue: 20000 },
-  ];
-  const categoryRevenue = [
-    { category: 'Compressors', value: 40000 },
-    { category: 'Parts', value: 20000 },
-    { category: 'Services', value: 10000 },
-  ];
-  const detailedRevenue = [
-    { date: '2024-05-01', product: 'Compressor X', amount: 5000 },
-    { date: '2024-05-02', product: 'Part Y', amount: 2000 },
-    { date: '2024-05-03', product: 'Service Z', amount: 1500 },
-  ];
-
-  res.json({
-    monthlyRevenue,
-    categoryRevenue,
-    detailedRevenue,
-  });
-});
