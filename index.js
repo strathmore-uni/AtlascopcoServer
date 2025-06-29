@@ -13,6 +13,12 @@ const moment = require('moment');
 const fetch = require('node-fetch');
 require("dotenv").config();
 
+// Routers
+const userRoutes = require("./routes/users");
+// const productRoutes = require("./routes/products");
+// const orderRoutes = require("./routes/orders");
+// const adminRoutes = require("./routes/admin");
+
 const { OAuth2Client, auth } = require("google-auth-library");
 const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
@@ -42,6 +48,12 @@ app.use(
 );
 
 app.use(express.json());
+
+// Use routers
+app.use("/api/users", userRoutes);
+// app.use("/api/products", productRoutes);
+// app.use("/api/orders", orderRoutes);
+// app.use("/api/admin", adminRoutes);
 
 const loggedInUsers = new Set();
 
