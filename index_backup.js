@@ -15,7 +15,7 @@ require("dotenv").config();
 
 // Routers
 const userRoutes = require("./routes/users");
-const productRoutes = require("./routes/products");
+// const productRoutes = require("./routes/products");
 // const orderRoutes = require("./routes/orders");
 // const adminRoutes = require("./routes/admin");
 
@@ -41,10 +41,9 @@ app.use(function (req, res, next) {
 }
 app.use(
   cors({
-    origin: ["http://localhost:3000", "https://localhost:3000", "http://localhost:3001", "https://localhost:3001"], // Allow requests from your frontend origins
+    origin: "https://localhost:3000", // Allow requests from your frontend origin
     methods: "GET,POST,PUT,DELETE,PATCH,OPTIONS",
     allowedHeaders: "Content-Type,Authorization,user-email", // Allow Authorization header
-    credentials: true, // Allow credentials
   })
 );
 
@@ -52,146 +51,15 @@ app.use(express.json());
 
 // Use routers
 app.use("/api/users", userRoutes);
-app.use("/api/products", productRoutes);
+// app.use("/api/products", productRoutes);
 // app.use("/api/orders", orderRoutes);
 // app.use("/api/admin", adminRoutes);
-
-// Backward compatibility for old login endpoint
-app.post('/login', async (req, res) => {
-  const { email, password } = req.body;
-
-  console.log('Login attempt with email:', email);
-
-  try {
-    const sql = "SELECT * FROM registration WHERE email = ?";
-    const [users] = await pool.query(sql, [email]);
-
-    if (users.length > 0) {
-      const user = users[0];
-
-      // Check if the user is suspended
-      if (user.is_suspended) {
-        return res.status(403).json({ message: "Account suspended" });
-      }
-
-      // Compare the provided password with the hashed password stored in the database
-      const passwordMatch = await bcrypt.compare(password, user.password);
-
-      if (passwordMatch) {
-        const isAdmin = user.role === "superadmin";
-        const isMiniAdmin = user.role === "admin";
-        const isWarehouse = user.role === "warehouse";
-        const isFinance = user.role === "finance";
-        // Create JWT token
-        const token = jwt.sign(
-          { 
-            email: user.email, 
-            isAdmin: isAdmin, 
-            isMiniAdmin: isMiniAdmin,
-            isWarehouse: isWarehouse, 
-            isFinance: isFinance,
-            country: user.country,
-          }, 
-          secretKey, 
-          { expiresIn: "7d" }
-        );
-
-        // Log successful login
-        await logAudit({
-          email,
-          action: "Login",
-          success: true
-        });
-
-        // Insert login record into logins table
-        const insertLoginSql = "INSERT INTO logins (user_id, login_time, email, status) VALUES (?, NOW(), ?, ?)";
-        await pool.query(insertLoginSql, [user.id, user.email, 'online']);
-        
-
-        return res.json({
-          message: "Login Successful",
-          token,
-          isAdmin: isAdmin,
-          isMiniAdmin: isMiniAdmin,
-          isWarehouse: isWarehouse,
-          isFinance: isFinance,
-          country: user.country // Include country in the response
-        });
-      } else {
-        console.log('Login failed for email:', email);
-
-        // Log failed login due to incorrect password
-        await logAudit({
-          email,
-          action: "Login",
-          success: false
-        });
-
-        return res.status(401).json({ message: "Login Failed: Incorrect Password" });
-      }
-    } else {
-      console.log('Login failed: Email not found', email);
-
-      // Log failed login due to email not found
-      await logAudit({
-        email,
-        action: "Login",
-        success: false
-      });
-
-      return res.status(401).json({ message: "Login Failed: Email Not Found" });
-    }
-  } catch (error) {
-    console.error("Error during login:", error);
-
-    // Log failed login due to error
-    await logAudit({
-      email,
-      action: "Login",
-      success: false
-    });
-
-    return res.status(500).json({ message: "Internal Server Error" });
-  }
-});
-
-// Verify token endpoint
-app.post("/verifyToken", async (req, res) => {
-  const { token } = req.body;
-  
-  if (!token) {
-    return res.status(401).json({ valid: false, message: "Token required" });
-  }
-
-  try {
-    jwt.verify(token, secretKey, (err, decoded) => {
-      if (err) {
-        return res.status(401).json({ valid: false, message: "Invalid token" });
-      }
-      
-      res.json({
-        valid: true,
-        user: {
-          email: decoded.email,
-          isAdmin: decoded.isAdmin,
-          isMiniAdmin: decoded.isMiniAdmin,
-          isWarehouse: decoded.isWarehouse,
-          isFinance: decoded.isFinance,
-          country: decoded.country,
-        }
-      });
-    });
-  } catch (error) {
-    console.error("Token verification error:", error);
-    res.status(500).json({ valid: false, message: "Internal server error" });
-  }
-});
 
 const loggedInUsers = new Set();
 
 salt = 10;
 
-const secretKey = process.env.JWT_SECRET || 'your-secret-key-fallback-for-development';
+const secretKey = process.env.JWT_SECRET;
 let pool;
 
 try {
@@ -852,7 +720,99 @@ const validateInput = (req, res, next) => {
 
 const saltRounds = 10;
 
-// User registration endpoint moved to routes/users.js
+app.post("/api/register", validateInput, async (req, res) => {
+  const {
+    companyName,
+    title,
+    firstName,
+    secondName,
+    address1,
+    address2,
+    city,
+    zip,
+    phone,
+    email,
+    password,
+    country,
+  } = req.body;
+
+  const normalizedEmail = email.toLowerCase();
+  const adminEmail = req.user?.email || "unknown"; // Get admin email from request (adjust as needed)
+
+  try {
+    // Check if email already exists
+    const checkEmailQuery =
+      "SELECT email FROM registration WHERE LOWER(email) = LOWER(?)";
+    const [result] = await pool.query(checkEmailQuery, [normalizedEmail]);
+
+    if (result.length > 0) {
+      console.error("Email already exists:", normalizedEmail);
+      return res.status(400).json({ error: "Email already exists" });
+    }
+
+    // Hash the password using bcrypt
+    const hashedPassword = await bcrypt.hash(password, saltRounds);
+
+    // Insert user into the registration table
+    const insertQuery = `
+      INSERT INTO registration (
+        companyName, title, firstName, secondName, address1, address2, city, zip, phone, email, password, country
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+    `;
+    const values = [
+      companyName,
+      title,
+      firstName,
+      secondName,
+      address1,
+      address2,
+      city,
+      zip,
+      phone,
+      normalizedEmail,
+      hashedPassword, // Store the hashed password
+      country,
+    ];
+
+    await pool.query(insertQuery, values);
+
+    // Insert notification for admin
+    const notificationQuery = `
+      INSERT INTO notifications (message, country, created_at) 
+      VALUES (?, ?, NOW())
+    `;
+    const notificationMessage = `New user registered: ${normalizedEmail}, Country: ${country}`;
+    await pool.query(notificationQuery, [notificationMessage, country]);
+
+    // Insert audit log
+    const auditLogQuery = `
+      INSERT INTO audit_logs (email, action, success, ip_address, timestamp) 
+      VALUES (?, ?, ?, ?, NOW())
+    `;
+    const action = `Registered new user: ${normalizedEmail}`;
+    const success = 1; // Success
+    const ipAddress = req.ip || "unknown"; // Adjust as needed
+
+    await pool.query(auditLogQuery, [email, action, success, ipAddress]);
+
+    res.status(201).json({ message: "User registered successfully" });
+  } catch (err) {
+    console.error("Server error:", err);
+
+    // Insert audit log for failed registration
+    const auditLogQuery = `
+      INSERT INTO audit_logs (email, action, success, ip_address, timestamp) 
+      VALUES (?, ?, ?, ?, NOW())
+    `;
+    const action = `Failed to register new user: ${normalizedEmail}`;
+    const success = 0; // Failure
+    const ipAddress = req.ip || "unknown"; // Adjust as needed
+
+    await pool.query(auditLogQuery, [email, action, success, ipAddress]);
+
+    res.status(500).json({ error: "Server error" });
+  }
+});
 
 app.get("/verify-email", (req, res) => {
   const email = req.query.email;
@@ -877,9 +837,139 @@ app.get("/verify-email", (req, res) => {
   });
 });
 
-// Login endpoint moved to routes/users.js
+app.post('/login', async (req, res) => {
+  const sql = "SELECT * FROM registration WHERE email = ?";
+  const email = req.body.email;
+  const password = req.body.password;
 
-// Password reset endpoint moved to routes/users.js
+  console.log('Login attempt with email:', email);
+
+  try {
+    // Query to get user details
+    const [users] = await pool.query(sql, [email]);
+
+    if (users.length > 0) {
+      const user = users[0];
+
+      // Check if the user is suspended
+      if (user.is_suspended) {
+        return res.status(403).json({ message: "Account suspended" });
+      }
+
+      // Compare the provided password with the hashed password stored in the database
+      const passwordMatch = await bcrypt.compare(password, user.password);
+
+      if (passwordMatch) {
+        const isAdmin = user.role === "superadmin";
+        const isMiniAdmin = user.role === "admin";
+        const isWarehouse = user.role === "warehouse";
+        const isFinance = user.role === "finance";
+        // Create JWT token
+        const token = jwt.sign(
+          { 
+            email: user.email, 
+            isAdmin: isAdmin, 
+            isMiniAdmin: isMiniAdmin,
+            isWarehouse: isWarehouse, 
+            isFinance: isFinance,
+            country: user.country,
+          }, 
+          secretKey, 
+          { expiresIn: "7d" }
+        );
+
+        // Log successful login
+        await logAudit({
+          email,
+          action: "Login",
+          success: true
+        });
+
+        // Insert login record into logins table
+        const insertLoginSql = "INSERT INTO logins (user_id, login_time, email, status) VALUES (?, NOW(), ?, ?)";
+        await pool.query(insertLoginSql, [user.id, user.email, 'online']);
+        
+
+        return res.json({
+          message: "Login Successful",
+          token,
+          isAdmin: isAdmin,
+          isMiniAdmin: isMiniAdmin,
+          isWarehouse: isWarehouse,
+          isFinance:isFinance,
+          country: user.country // Include country in the response
+        });
+      } else {
+        console.log('Login failed for email:', email);
+
+        // Log failed login due to incorrect password
+        await logAudit({
+          email,
+          action: "Login",
+          success: false
+        });
+
+        return res.status(401).json({ message: "Login Failed: Incorrect Password" });
+      }
+    } else {
+      console.log('Login failed: Email not found', email);
+
+      // Log failed login due to email not found
+      await logAudit({
+        email,
+        action: "Login",
+        success: false
+      });
+
+      return res.status(401).json({ message: "Login Failed: Email Not Found" });
+    }
+  } catch (error) {
+    console.error("Error during login:", error);
+
+    // Log failed login due to error
+    await logAudit({
+      email,
+      action: "Login",
+      success: false
+    });
+
+    return res.status(500).json({ message: "Internal Server Error" });
+  }
+});
+app.post('/api/reset-password', async (req, res) => {
+  const { email, newPassword } = req.body;
+
+  // Check if email and newPassword are provided
+  if (!email || !newPassword) {
+    return res.status(400).json({ message: 'Email and new password are required' });
+  }
+
+  try {
+    // Hash the new password
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+
+    // Update the password in the database
+    // Example using SQL, modify accordingly for other databases (e.g., MongoDB)
+    const result = await pool.query(
+      'UPDATE registration SET password = ? WHERE email = ?',
+      [hashedPassword, email]
+    );
+
+    // Check if any rows were updated
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    // Successfully updated
+    res.status(200).json({ message: 'Password reset successfully' });
+  } catch (error) {
+    console.error('Error resetting password:', error);
+    res.status(500).json({ message: 'An error occurred while resetting the password' });
+  }
+});
+
+
+
 
 app.post('/api/admin/suspend', async (req, res) => {
   const { adminId, suspend } = req.body;
@@ -930,7 +1020,23 @@ function logAudit({ email, action, success }) {
   });
 }
 
-// VerifyToken endpoint moved to routes/users.js
+app.post("/verifyToken", (req, res) => {
+  const token = req.body.token;
+  if (!token) {
+    return res.status(401).json({ message: "Token required" });
+  }
+
+  jwt.verify(token, secretKey, (err, decoded) => {
+    if (err) {
+      return res.status(401).json({ message: "Invalid token" });
+    }
+    res.json({
+      email: decoded.email,
+      isAdmin: decoded.isAdmin,
+      country: decoded.country,
+    });
+  });
+});
 
 app.use((req, res, next) => {
   const token = req.headers.authorization?.split(" ")[1];
@@ -5357,31 +5463,10 @@ app.post('/api/send-invoice', async (req, res) => {
   const INVOICE_NINJA_URL = 'http://localhost:8000/api/v1';
   const API_TOKEN = 'lplYeuCJfmmcWfhPdJ9BHA1GcBuU7aBQHmY4K1xBpxU2RhB3Tr8y0VcZL3QHNDFB';
 
-  // Simple country mapping
-  const getCountryId = (countryCode) => {
-    const countryMap = {
-      'US': 840, 'CA': 124, 'GB': 826, 'AU': 36, 'DE': 276, 'FR': 250, 'IT': 380, 'ES': 724,
-      'NL': 528, 'BE': 56, 'CH': 756, 'AT': 40, 'SE': 752, 'NO': 578, 'DK': 208, 'FI': 246,
-      'IE': 372, 'PT': 620, 'GR': 300, 'PL': 616, 'CZ': 203, 'HU': 348, 'RO': 642, 'BG': 100,
-      'HR': 191, 'SI': 705, 'SK': 703, 'LT': 440, 'LV': 428, 'EE': 233, 'MT': 470, 'CY': 196,
-      'LU': 442, 'IS': 352, 'LI': 438, 'MC': 492, 'SM': 674, 'VA': 336, 'AD': 20, 'KE': 404, // Kenya
-      'NG': 566, 'ZA': 710, 'EG': 818, 'MA': 504, 'TN': 788, 'DZ': 12, 'LY': 434, 'SD': 729,
-      'ET': 231, 'TZ': 834, 'UG': 800, 'RW': 646, 'BI': 108, 'MW': 454, 'ZM': 894, 'ZW': 716,
-      'BW': 72, 'NA': 516, 'SZ': 748, 'LS': 426, 'MG': 450, 'MU': 480, 'SC': 690, 'KM': 174,
-      'DJ': 262, 'SO': 706, 'ER': 232, 'SS': 728, 'CF': 140, 'TD': 148, 'CM': 120, 'GQ': 226,
-      'GA': 266, 'CG': 178, 'CD': 180, 'AO': 24, 'ST': 678, 'GW': 624, 'GN': 324, 'SL': 694,
-      'LR': 430, 'CI': 384, 'GH': 288, 'TG': 768, 'BJ': 204, 'BF': 854, 'ML': 466, 'NE': 562,
-      'TD': 148, 'SN': 686, 'GM': 270, 'GN': 324, 'GW': 624, 'CV': 132, 'MR': 478, 'ML': 466
-    };
-    
-    return countryMap[countryCode] || 840; // Default to US if country code not found
-  };
-
   try {
     // 1. Create or get client
     let clientId;
     let contact = null;
-    
     // Try to find client by email
     const searchResponse = await fetch(`${INVOICE_NINJA_URL}/clients?email=${client.email}`, {
       headers: {
@@ -5390,37 +5475,14 @@ app.post('/api/send-invoice', async (req, res) => {
         'X-Requested-With': 'XMLHttpRequest'
       }
     });
-    
-    if (!searchResponse.ok) {
-      console.error('Invoice Ninja search failed:', searchResponse.status, searchResponse.statusText);
-      return res.status(500).json({ error: 'Invoice Ninja service unavailable' });
-    }
-    
     const searchData = await searchResponse.json();
     console.log('Client search response:', searchData);
-    
     if (searchData.data && Array.isArray(searchData.data) && searchData.data.length > 0) {
       clientId = searchData.data[0].id;
       const clientObj = searchData.data[0];
       contact = clientObj.contacts && clientObj.contacts.length > 0 ? clientObj.contacts[0] : null;
     } else {
-      // Create client with proper country_id handling
-      const countryMap = {
-        'US': 840, 'CA': 124, 'GB': 826, 'AU': 36, 'DE': 276, 'FR': 250, 'IT': 380, 'ES': 724,
-        'NL': 528, 'BE': 56, 'CH': 756, 'AT': 40, 'SE': 752, 'NO': 578, 'DK': 208, 'FI': 246,
-        'IE': 372, 'PT': 620, 'GR': 300, 'PL': 616, 'CZ': 203, 'HU': 348, 'RO': 642, 'BG': 100,
-        'HR': 191, 'SI': 705, 'SK': 703, 'LT': 440, 'LV': 428, 'EE': 233, 'MT': 470, 'CY': 196,
-        'LU': 442, 'IS': 352, 'LI': 438, 'MC': 492, 'SM': 674, 'VA': 336, 'AD': 20, 'KE': 404, // Kenya
-        'NG': 566, 'ZA': 710, 'EG': 818, 'MA': 504, 'TN': 788, 'DZ': 12, 'LY': 434, 'SD': 729,
-        'ET': 231, 'TZ': 834, 'UG': 800, 'RW': 646, 'BI': 108, 'MW': 454, 'ZM': 894, 'ZW': 716,
-        'BW': 72, 'NA': 516, 'SZ': 748, 'LS': 426, 'MG': 450, 'MU': 480, 'SC': 690, 'KM': 174,
-        'DJ': 262, 'SO': 706, 'ER': 232, 'SS': 728, 'CF': 140, 'TD': 148, 'CM': 120, 'GQ': 226,
-        'GA': 266, 'CG': 178, 'CD': 180, 'AO': 24, 'ST': 678, 'GW': 624, 'GN': 324, 'SL': 694,
-        'LR': 430, 'CI': 384, 'GH': 288, 'TG': 768, 'BJ': 204, 'BF': 854, 'ML': 466, 'NE': 562,
-        'TD': 148, 'SN': 686, 'GM': 270, 'GN': 324, 'GW': 624, 'CV': 132, 'MR': 478, 'ML': 466
-      };
-      const countryId = countryMap[client.country] || 840; // Default to US if country code not found
-      
+      // Create client
       const createClientResponse = await fetch(`${INVOICE_NINJA_URL}/clients`, {
         method: 'POST',
         headers: {
@@ -5437,7 +5499,7 @@ app.post('/api/send-invoice', async (req, res) => {
           city: client.city || '',
           state: client.state || '',
           postal_code: client.zip || '',
-          country_id: countryId, // Use converted country ID
+          country_id: client.country || 1,
           contacts: [{
             email: client.email,
             first_name: client.name.split(' ')[0],
@@ -5445,20 +5507,11 @@ app.post('/api/send-invoice', async (req, res) => {
           }]
         })
       });
-      
-      if (!createClientResponse.ok) {
-        const createClientData = await createClientResponse.json();
-        console.error('Client create failed:', createClientResponse.status, createClientData);
-        return res.status(500).json({ error: 'Failed to create client', details: createClientData });
-      }
-      
       const createClientData = await createClientResponse.json();
       console.log('Client create response:', createClientData);
-      
       if (!createClientData.data || !createClientData.data.id) {
         return res.status(500).json({ error: 'Failed to create client', details: createClientData });
       }
-      
       clientId = createClientData.data.id;
       contact = createClientData.data.contacts && createClientData.data.contacts.length > 0 ? createClientData.data.contacts[0] : null;
     }
@@ -5488,8 +5541,6 @@ app.post('/api/send-invoice', async (req, res) => {
       contacts: [{ id: contact.id, email: contact.email }]
     };
 
-    console.log('Creating invoice with data:', JSON.stringify(invoiceData, null, 2));
-
     const createInvoiceResponse = await fetch(`${INVOICE_NINJA_URL}/invoices`, {
       method: 'POST',
       headers: {
@@ -5500,14 +5551,12 @@ app.post('/api/send-invoice', async (req, res) => {
       body: JSON.stringify(invoiceData)
     });
 
-    if (!createInvoiceResponse.ok) {
-      const createInvoiceData = await createInvoiceResponse.json();
-      console.error('Invoice creation failed:', createInvoiceResponse.status, createInvoiceData);
-      return res.status(500).json({ error: 'Failed to create invoice', details: createInvoiceData });
-    }
-
     const createInvoiceData = await createInvoiceResponse.json();
     console.log('Invoice creation response:', createInvoiceData);
+
+    if (!createInvoiceResponse.ok) {
+      return res.status(500).json({ error: 'Failed to create invoice', details: createInvoiceData });
+    }
 
     const invoiceId = createInvoiceData.data.id;
 
@@ -5536,7 +5585,7 @@ app.post('/api/send-invoice', async (req, res) => {
 
   } catch (error) {
     console.error('Invoice Ninja integration error:', error);
-    res.status(500).json({ error: 'Failed to process invoice', details: error.message });
+    res.status(500).json({ error: 'Failed to process invoice' });
   }
 });
 
@@ -5557,246 +5606,5 @@ app.get("/api/test-connection", async (req, res) => {
   } catch (err) {
     console.error("Error executing query:", err);
     res.status(500).send(err);
-  }
-});
-
-// Backward compatibility for old register endpoint
-app.post('/api/register', validateInput, async (req, res) => {
-  const {
-    companyName,
-    title,
-    firstName,
-    secondName,
-    address1,
-    address2,
-    city,
-    zip,
-    phone,
-    email,
-    password,
-    country,
-  } = req.body;
-
-  const normalizedEmail = email.toLowerCase();
-  const adminEmail = req.user?.email || "unknown";
-
-  try {
-    // Check if email already exists
-    const checkEmailQuery = "SELECT email FROM registration WHERE LOWER(email) = LOWER(?)";
-    const [result] = await pool.query(checkEmailQuery, [normalizedEmail]);
-
-    if (result.length > 0) {
-      console.error("Email already exists:", normalizedEmail);
-      return res.status(400).json({ error: "Email already exists" });
-    }
-
-    // Hash the password using bcrypt
-    const hashedPassword = await bcrypt.hash(password, saltRounds);
-
-    // Insert user into the registration table
-    const insertQuery = `
-      INSERT INTO registration (
-        companyName, title, firstName, secondName, address1, address2, city, zip, phone, email, password, country
-      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-    `;
-    const values = [
-      companyName,
-      title,
-      firstName,
-      secondName,
-      address1,
-      address2,
-      city,
-      zip,
-      phone,
-      normalizedEmail,
-      hashedPassword,
-      country,
-    ];
-
-    await pool.query(insertQuery, values);
-
-    // Insert notification for admin
-    const notificationQuery = `
-      INSERT INTO notifications (message, country, created_at) 
-      VALUES (?, ?, NOW())
-    `;
-    const notificationMessage = `New user registered: ${normalizedEmail}, Country: ${country}`;
-    await pool.query(notificationQuery, [notificationMessage, country]);
-
-    // Insert audit log
-    const auditLogQuery = `
-      INSERT INTO audit_logs (email, action, success, ip_address, timestamp) 
-      VALUES (?, ?, ?, ?, NOW())
-    `;
-    const action = `Registered new user: ${normalizedEmail}`;
-    const success = 1;
-    const ipAddress = req.ip || "unknown";
-
-    await pool.query(auditLogQuery, [email, action, success, ipAddress]);
-
-    res.status(201).json({ message: "User registered successfully" });
-  } catch (err) {
-    console.error("Server error:", err);
-
-    // Insert audit log for failed registration
-    const auditLogQuery = `
-      INSERT INTO audit_logs (email, action, success, ip_address, timestamp) 
-      VALUES (?, ?, ?, ?, NOW())
-    `;
-    const action = `Failed to register new user: ${normalizedEmail}`;
-    const success = 0;
-    const ipAddress = req.ip || "unknown";
-
-    await pool.query(auditLogQuery, [email, action, success, ipAddress]);
-
-    res.status(500).json({ error: "Server error" });
-  }
-});
-
-// Backward compatibility for old product endpoints
-app.get('/api/product/:id', async (req, res) => {
-  // Forward to the new products router
-  req.url = `/api/products/${req.params.id}`;
-  productRoutes(req, res);
-});
-
-app.get('/api/spec/product/:id', async (req, res) => {
-  // Forward to the new products router
-  req.url = `/api/products/spec/${req.params.id}`;
-  productRoutes(req, res);
-});
-
-app.get("/api/myproducts", async (req, res) => {
-  // Forward to the new products router
-  req.url = "/api/products/myproducts";
-  productRoutes(req, res);
-});
-
-app.get("/api/products/:category?", async (req, res) => {
-  // Forward to the new products router
-  req.url = `/api/products/category/${req.params.category || ''}`;
-  productRoutes(req, res);
-});
-
-app.get("/api/products/partnumber/:partnumber", async (req, res) => {
-  // Forward to the new products router
-  req.url = `/api/products/partnumber/${req.params.partnumber}`;
-  productRoutes(req, res);
-});
-
-app.get('/api/relatedproducts/:productId', async (req, res) => {
-  // Forward to the new products router
-  req.url = `/api/products/related/${req.params.productId}`;
-  productRoutes(req, res);
-});
-
-app.get('/api/reviews/:productId', async (req, res) => {
-  // Forward to the new products router
-  req.url = `/api/products/reviews/${req.params.productId}`;
-  productRoutes(req, res);
-});
-
-app.post('/api/reviews', async (req, res) => {
-  // Forward to the new products router
-  req.url = "/api/products/reviews";
-  productRoutes(req, res);
-});
-
-// Admin product endpoints backward compatibility
-app.get("/api/viewproducts", async (req, res) => {
-  // Forward to the new products router
-  req.url = "/api/products/admin/view";
-  productRoutes(req, res);
-});
-
-app.get("/api/viewproducts/:id", async (req, res) => {
-  // Forward to the new products router
-  req.url = `/api/products/admin/view/${req.params.id}`;
-  productRoutes(req, res);
-});
-
-app.put("/api/viewproducts/:id", async (req, res) => {
-  // Forward to the new products router
-  req.url = `/api/products/admin/view/${req.params.id}`;
-  productRoutes(req, res);
-});
-
-app.delete("/api/viewproducts/:id", async (req, res) => {
-  // Forward to the new products router
-  req.url = `/api/products/admin/view/${req.params.id}`;
-  productRoutes(req, res);
-});
-
-app.post("/api/newproducts", async (req, res) => {
-  // Forward to the new products router
-  req.url = "/api/products/admin/new";
-  productRoutes(req, res);
-});
-
-app.post("/api/newproducts/batch", async (req, res) => {
-  // Forward to the new products router
-  req.url = "/api/products/admin/new/batch";
-  productRoutes(req, res);
-});
-
-app.get("/api/admin/products/near-completion", async (req, res) => {
-  // Forward to the new products router
-  req.url = "/api/products/admin/near-completion";
-  productRoutes(req, res);
-});
-
-app.get("/api/admin/mostOrderedProducts", async (req, res) => {
-  // Forward to the new products router
-  req.url = "/api/products/admin/most-ordered";
-  productRoutes(req, res);
-});
-
-app.get("/api/admin/products/count", async (req, res) => {
-  // Forward to the new products router
-  req.url = "/api/products/admin/count";
-  productRoutes(req, res);
-});
-
-app.get("/api/salesdata/:productId", async (req, res) => {
-  // Forward to the new products router
-  req.url = `/api/products/sales-data/${req.params.productId}`;
-  productRoutes(req, res);
-});
-
-app.get("/api/admin/productOrderCount/:partnumber", async (req, res) => {
-  // Forward to the new products router
-  req.url = `/api/products/admin/order-count/${req.params.partnumber}`;
-  productRoutes(req, res);
-});
-
-// Update cart item quantity
-app.put("/api/cart/:partnumber", async (req, res) => {
-  const userEmail = req.query.email;
-  const { partnumber } = req.params;
-  const { quantity } = req.body;
-
-  if (!userEmail) {
-    return res.status(400).json({ error: "Email parameter is required" });
-  }
-
-  if (!quantity || quantity <= 0) {
-    return res.status(400).json({ error: "Valid quantity is required" });
-  }
-
-  try {
-    const [result] = await pool.query(
-      "UPDATE cart SET quantity = ? WHERE user_email = ? AND partnumber = ?",
-      [quantity, userEmail, partnumber]
-    );
-
-    if (result.affectedRows === 0) {
-      return res.status(404).json({ error: "Item not found in cart" });
-    }
-
-    res.json({ message: "Cart item updated successfully" });
-  } catch (error) {
-    console.error("Error updating cart item:", error);
-    res.status(500).json({ error: "Error updating cart item" });
   }
 });

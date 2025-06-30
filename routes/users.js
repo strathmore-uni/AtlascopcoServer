@@ -361,4 +361,39 @@ router.post("/verify-token", (req, res) => {
   });
 });
 
+// Verify token endpoint
+router.post("/verifyToken", async (req, res) => {
+  const { token } = req.body;
+  
+  if (!token) {
+    return res.status(401).json({ valid: false, message: "Token required" });
+  }
+
+  try {
+    const jwt = require('jsonwebtoken');
+    const secretKey = process.env.JWT_SECRET || 'your-secret-key';
+    
+    jwt.verify(token, secretKey, (err, decoded) => {
+      if (err) {
+        return res.status(401).json({ valid: false, message: "Invalid token" });
+      }
+      
+      res.json({
+        valid: true,
+        user: {
+          email: decoded.email,
+          isAdmin: decoded.isAdmin,
+          isMiniAdmin: decoded.isMiniAdmin,
+          isWarehouse: decoded.isWarehouse,
+          isFinance: decoded.isFinance,
+          country: decoded.country,
+        }
+      });
+    });
+  } catch (error) {
+    console.error("Token verification error:", error);
+    res.status(500).json({ valid: false, message: "Internal server error" });
+  }
+});
+
 module.exports = router; 
